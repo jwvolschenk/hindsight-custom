@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import queue
+import socket
 import sys
 import threading
 from datetime import datetime, timezone
@@ -56,6 +57,18 @@ _RETAIN_SCHEMA = {
             "context": {"type": "string", "description": "Short label (e.g. 'user preference', 'project decision')."},
             "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional tags."},
             "bank": {"type": "string", "description": "Override bank (default: auto-detected from project). Use 'system' for cross-project knowledge."},
+            "entities": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string", "description": "Entity name (e.g. 'jwv-mint', 'redis')"},
+                        "type": {"type": "string", "description": "Entity type/label (e.g. 'host', 'service')"},
+                    },
+                    "required": ["text"],
+                },
+                "description": "Optional entities to associate. The host entity is added automatically.",
+            },
         },
         "required": ["content"],
     },
@@ -132,6 +145,7 @@ class HindsightProjectProvider(MemoryProvider):
         self._config = None
         self._session_id: str = ""
         self._platform: str = ""
+        self._hostname: str = socket.gethostname()
 
         # Retain controls
         self._auto_retain: bool = True
@@ -192,6 +206,21 @@ class HindsightProjectProvider(MemoryProvider):
             f"Use `hindsight_recall` to search prior work. "
             f"Use `hindsight_project` to check or change the active project.\n"
         )
+
+    # ── Host entity helpers ──────────────────────────────────────────────
+
+    def _host_entity(self) -> list[dict[str, str]]:
+        """Return the default host entity for this machine."""
+        return [{"text": self._hostname, "type": "host"}]
+
+    def _merge_entities(self, entities: list[dict[str, str]] | None) -> list[dict[str, str]]:
+        """Merge user-supplied entities with the auto host entity, deduplicating by text."""
+        merged = {e["text"]: e for e in self._host_entity()}
+        if entities:
+            for e in entities:
+                if e.get("text"):
+                    merged[e["text"]] = e
+        return list(merged.values())
 
     # ── Prefetch (auto-recall) ──────────────────────────────────────────────
 
@@ -257,6 +286,7 @@ class HindsightProjectProvider(MemoryProvider):
                     content=content,
                     context=self._retain_context,
                     tags=tags,
+                    entities=self._host_entity(),
                     document_id=self._document_id,
                     metadata={
                         "retained_at": now,
@@ -298,6 +328,7 @@ class HindsightProjectProvider(MemoryProvider):
                 self._client.retain(
                     content=old_content, context=self._retain_context,
                     tags=[f"session:{self._session_id}"] if self._session_id else None,
+                    entities=self._host_entity(),
                     document_id=self._document_id,
                 )
             except Exception as e:
@@ -317,6 +348,7 @@ class HindsightProjectProvider(MemoryProvider):
                 self._client.retain(
                     content=old_content, context=self._retain_context,
                     tags=[f"session:{self._session_id}"] if self._session_id else None,
+                    entities=self._host_entity(),
                     document_id=self._document_id,
                 )
             except Exception as e:
@@ -346,6 +378,7 @@ class HindsightProjectProvider(MemoryProvider):
             return json.dumps(self._client.retain(
                 content=args.get("content", ""), bank=args.get("bank", ""),
                 context=args.get("context"), tags=args.get("tags"),
+                entities=self._merge_entities(args.get("entities")),
             ))
         elif tool_name == "hindsight_recall":
             return json.dumps(self._client.recall(

@@ -73,6 +73,7 @@ def hindsight_retain(
     context: str = "",
     tags: list[str] | None = None,
     bank: str = "",
+    entities: list[dict[str, str]] | None = None,
 ) -> str:
     """Store information in long-term memory.
 
@@ -86,6 +87,9 @@ def hindsight_retain(
         tags: Optional tags for categorisation.
         bank: Override bank (default: auto-detected from project).
               Use 'system' for cross-project knowledge.
+        entities: Optional list of entities to associate with this memory.
+                  Each entity has 'text' (name) and 'type' (label, e.g. 'host', 'service').
+                  Example: [{"text": "jwv-mint", "type": "host"}]
     """
     client = _get_client()
     result = client.retain(
@@ -93,6 +97,7 @@ def hindsight_retain(
         bank=bank,
         context=context or None,
         tags=tags,
+        entities=entities,
     )
     return json.dumps(result)
 

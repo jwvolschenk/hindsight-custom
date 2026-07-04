@@ -83,6 +83,7 @@ class HindsightClient:
         bank: str = "",
         context: str | None = None,
         tags: list[str] | None = None,
+        entities: list[dict[str, str]] | None = None,
         document_id: str | None = None,
         metadata: dict | None = None,
         retain_async: bool = True,
@@ -94,6 +95,8 @@ class HindsightClient:
             item["context"] = context
         if tags:
             item["tags"] = tags
+        if entities:
+            item["entities"] = entities
         if metadata:
             item["metadata"] = metadata
 
