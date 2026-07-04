@@ -680,13 +680,16 @@ install_opencode() {
         (cd "$plugin_dir" && pnpm install --silent 2>/dev/null && pnpm run build --silent 2>/dev/null) && plugin_built=true
     fi
 
+    local plugin_built_py="False"
+    $plugin_built && plugin_built_py="True"
+
     # Configure opencode.json
     if [ -f "$cfg" ] && command -v python3 &>/dev/null; then
         python3 -c "
 import json
 with open('$cfg') as f: d=json.load(f)
 # Add native plugin if built, otherwise MCP server
-if $plugin_built; then
+if $plugin_built_py:
     plugins = d.get('plugin', [])
     plugin_ref = 'file:$plugin_dir'
     if plugin_ref not in plugins:
@@ -695,7 +698,7 @@ if $plugin_built; then
 else:
     d.setdefault('mcp',{})['hindsight']={'command':'python3','args':['-m','mcp_server'],'cwd':'$INSTALL_DIR'}
 with open('$cfg','w') as f: json.dump(d,f,indent=2); f.write('\n')
-" 2>/dev/null
+"
     else
         mkdir -p "$(dirname "$cfg")"
         if $plugin_built; then
