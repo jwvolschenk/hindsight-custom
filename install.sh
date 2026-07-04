@@ -179,6 +179,7 @@ assert found
 checkbox_select() {
     local filter="${1:-all}"
     local pre_selected="${2:-none}"
+    set +u  # arrays with set -u cause unbound variable errors
 
     local -a KEY_LIST=()
     local -a LABEL_LIST=()
@@ -289,6 +290,7 @@ checkbox_select() {
         fi
     done
 
+    set -u
     return 0
 }
 
