@@ -9,7 +9,7 @@ python3 -m PyInstaller \
   --onefile \
   --name hindsight-installer-linux-x86_64 \
   --collect-all textual \
-  --add-data "install.sh:." \
+  --add-data "$ROOT_DIR/install.sh:." \
   --distpath dist \
   --workpath /tmp/hindsight-installer-build \
   --specpath /tmp/hindsight-installer-spec \
