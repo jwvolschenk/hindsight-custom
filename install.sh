@@ -179,7 +179,6 @@ assert found
 checkbox_select() {
     local filter="${1:-all}"
     local pre_selected="${2:-none}"
-    set +u  # arrays with set -u cause unbound variable errors
 
     local -a KEY_LIST=()
     local -a LABEL_LIST=()
@@ -233,7 +232,7 @@ checkbox_select() {
             [ "$i" -eq "$cursor" ] && printf "  \033[36m>\033[0m " || printf "    "
 
             # Checkbox
-            if [ "${STATE_LIST[$i]}" -eq 1 ]; then
+            if [ "${STATE_LIST[$i]:-0}" -eq 1 ]; then
                 printf "\033[32m[x]\033[0m "
             else
                 printf "[ ] "
@@ -272,7 +271,7 @@ checkbox_select() {
                 esac
             fi
         elif [[ "$key" == " " ]]; then
-            STATE_LIST[$cursor]=$(( 1 - STATE_LIST[$cursor] ))
+            STATE_LIST[$cursor]=$(( 1 - ${STATE_LIST[$cursor]:-0} ))
             draw
         elif [[ "$key" == "" ]] || [[ "$key" == $'\n' ]]; then
             break
@@ -284,13 +283,12 @@ checkbox_select() {
 
     INSTALL_AGENTS=""
     for i in $(seq 0 $((count - 1))); do
-        if [ "${STATE_LIST[$i]}" -eq 1 ]; then
+        if [ "${STATE_LIST[$i]:-0}" -eq 1 ]; then
             [ -n "$INSTALL_AGENTS" ] && INSTALL_AGENTS="$INSTALL_AGENTS,"
             INSTALL_AGENTS="$INSTALL_AGENTS${KEY_LIST[$i]}"
         fi
     done
 
-    set -u
     return 0
 }
 
