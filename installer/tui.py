@@ -16,7 +16,7 @@ from textual.css.query import NoMatches
 from textual.widgets import Button, Checkbox, Footer, Header, Input, Label, RichLog, Static
 
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 SPINNER = "|/-\\"
 AGENTS = [
@@ -41,7 +41,50 @@ def config_dir() -> Path:
 
 
 def config_file() -> Path:
-    return config_dir() / "config.json"
+    existing = find_config_file()
+    return existing if existing else config_dir() / "config.json"
+
+
+def config_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    configured = os.environ.get("HINDSIGHT_CONFIG", "").strip()
+    if configured:
+        candidates.append(Path(configured).expanduser())
+    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    if xdg:
+        candidates.append(Path(xdg).expanduser() / "hindsight-custom" / "config.json")
+    candidates.append(Path.home() / ".config" / "hindsight-custom" / "config.json")
+    candidates.append(Path.home() / ".hindsight-custom" / "config.json")
+    candidates.append(Path.home() / ".hermes" / "hindsight-custom" / "config.json")
+    return candidates
+
+
+def find_config_file() -> Path | None:
+    for candidate in config_candidates():
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def read_config_raw() -> dict[str, object]:
+    path = find_config_file()
+    if not path:
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _raw_api_url(raw: dict[str, object]) -> str:
+    value = raw.get("api_url") or raw.get("apiUrl") or raw.get("api-url")
+    return str(value).strip() if value else ""
+
+
+def _raw_api_key(raw: dict[str, object]) -> str:
+    value = raw.get("apiKey") or raw.get("api_key") or raw.get("api-key")
+    return str(value).strip() if value else ""
 
 
 def _json_has(path: Path, top_key: str, child_key: str) -> bool:
@@ -104,9 +147,10 @@ def _codex_installed(path: Path) -> bool:
 
 
 def load_config() -> dict[str, object]:
+    raw = read_config_raw()
     defaults: dict[str, object] = {
-        "api_url": os.environ.get("HINDSIGHT_API_URL", DEFAULT_API_URL),
-        "apiKey": os.environ.get("HINDSIGHT_API_KEY", ""),
+        "api_url": _raw_api_url(raw) or DEFAULT_API_URL,
+        "apiKey": _raw_api_key(raw),
         "timeout": 300,
         "budget": "mid",
         "search_shared": True,
@@ -114,14 +158,9 @@ def load_config() -> dict[str, object]:
         "retain_every_n_turns": 3,
         "recall_max_input_chars": 800,
     }
-    path = config_file()
-    if not path.exists():
-        return defaults
-    try:
-        current = json.loads(path.read_text())
-    except Exception:
-        return defaults
-    defaults.update(current)
+    defaults.update(raw)
+    defaults["api_url"] = _raw_api_url(defaults) or DEFAULT_API_URL
+    defaults["apiKey"] = _raw_api_key(defaults)
     if os.environ.get("HINDSIGHT_API_KEY"):
         defaults["apiKey"] = os.environ["HINDSIGHT_API_KEY"]
     if os.environ.get("HINDSIGHT_API_URL"):
@@ -130,9 +169,26 @@ def load_config() -> dict[str, object]:
 
 
 def save_config(api_url: str, api_key: str) -> Path:
-    cfg = load_config()
-    cfg["api_url"] = api_url.strip() or DEFAULT_API_URL
-    cfg["apiKey"] = api_key.strip()
+    cfg = read_config_raw()
+    existing_url = _raw_api_url(cfg)
+    existing_key = _raw_api_key(cfg)
+
+    cfg["api_url"] = api_url.strip() or existing_url or DEFAULT_API_URL
+    cfg["apiKey"] = api_key.strip() or existing_key
+
+    # Keep the canonical keys authoritative while preserving unrelated settings.
+    cfg.pop("apiUrl", None)
+    cfg.pop("api-url", None)
+    cfg.pop("api_key", None)
+    cfg.pop("api-key", None)
+
+    cfg.setdefault("timeout", 300)
+    cfg.setdefault("budget", "mid")
+    cfg.setdefault("search_shared", True)
+    cfg.setdefault("auto_retain", True)
+    cfg.setdefault("retain_every_n_turns", 3)
+    cfg.setdefault("recall_max_input_chars", 800)
+
     path = config_file()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(cfg, indent=2) + "\n")
@@ -304,10 +360,11 @@ class HindsightInstallerApp(App[None]):
                             )
                     yield Static("Configuration", classes="section")
                     cfg = load_config()
+                    yield Static(f"Config file: {config_file()}", classes="hint")
                     yield Label("Hindsight API URL", classes="hint")
                     yield Input(str(cfg.get("api_url") or DEFAULT_API_URL), id="api-url")
                     yield Label("API key", classes="hint")
-                    yield Input(str(cfg.get("apiKey") or ""), password=True, id="api-key")
+                    yield Input(str(cfg.get("apiKey") or ""), id="api-key")
                     with Horizontal(classes="actions-row"):
                         yield Button("Install Selected", id="run-install", variant="success")
 
