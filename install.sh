@@ -1,18 +1,13 @@
 #!/usr/bin/env bash
-# Hindsight Project Memory — Unified Installer
-#
-# Installs the MCP server and agent-specific integrations for:
-#   - Hermes Agent (memory provider plugin)
-#   - Claude Code (MCP + hooks)
-#   - OpenCode (MCP config)
-#   - Codex CLI (MCP + hooks)
-#   - GitHub Copilot (MCP + instructions)
+# Hindsight Custom — Unified Installer/Updater/Uninstaller
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/jwvolschenk/hindsight-custom/main/install.sh | bash
-#   ./install.sh --agents claude-code,codex    # skip prompt, install specific agents
-#   ./install.sh --all                          # skip prompt, install all
-#   ./install.sh --uninstall                    # remove everything
+#   ./install.sh                       # interactive mode
+#   ./install.sh install               # skip mode prompt
+#   ./install.sh update                # update MCP server/core only
+#   ./install.sh uninstall             # selective uninstall
+#   ./install.sh install --agents 1,3  # pre-select agents by number
 #
 set -euo pipefail
 
@@ -21,31 +16,33 @@ BRANCH="main"
 BASE_URL="https://raw.githubusercontent.com/$REPO/$BRANCH"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/hindsight-custom"
 CONFIG_FILE="$CONFIG_DIR/config.json"
+INSTALL_DIR="$CONFIG_DIR/lib"
 TEMP_DIR=$(mktemp -d)
 
-# Defaults
+# State
+MODE=""          # install, update, uninstall
 INSTALL_AGENTS=""
-UNINSTALL=false
+AGENT_LIST="hermes claude-code opencode codex copilot"
 
-# Interactive read — works when piped (curl | bash) by reading from /dev/tty
+# ── helpers ─────────────────────────────────────────────────────────────────
+
+cleanup() { rm -rf "$TEMP_DIR"; }
+trap cleanup EXIT
+
+# Interactive read — works when piped (curl | bash)
 ask() {
-    local prompt="$1"
-    local varname="$2"
-    local default="${3:-}"
+    local prompt="$1" varname="$2" default="${3:-}"
     if [ -t 0 ]; then
-        # stdin is a terminal — normal read
         read -rp "$prompt" "$varname"
     elif [ -r /dev/tty ]; then
-        # stdin is a pipe (curl | bash) — read from terminal directly
         printf "%s" "$prompt" > /dev/tty
         read -r "$varname" < /dev/tty
     else
-        # No terminal available — use default
         eval "$varname='$default'"
     fi
 }
 
-# Backup a config file before modifying it
+# Backup a config file
 backup() {
     local file="$1"
     if [ -f "$file" ]; then
@@ -53,238 +50,210 @@ backup() {
         mkdir -p "$backup_dir"
         local ts=$(date +%Y%m%d_%H%M%S)
         local base=$(basename "$file")
-        local backup="$backup_dir/${base}.${ts}.bak"
-        cp "$file" "$backup"
-        echo "      Backed up: $file -> $backup"
+        cp "$file" "$backup_dir/${base}.${ts}.bak"
     fi
 }
 
-# Inject or replace a marked section in a file.
-# Usage: inject_section <file> <marker_id> <content_file>
-# If the file already contains <!-- HINDSIGHT-CUSTOM:START --> ... END markers,
-# replaces the content between them. Otherwise appends the marked content.
+# Inject/replace a marked section in a file
 MARKER_START="<!-- HINDSIGHT-CUSTOM:START -->"
 MARKER_END="<!-- HINDSIGHT-CUSTOM:END -->"
 
 inject_section() {
-    local target="$1"
-    local content_file="$2"
-
+    local target="$1" content_file="$2"
     if [ ! -f "$target" ]; then
-        # File doesn't exist — create it with the marked content
         cp "$content_file" "$target"
         return
     fi
-
     if grep -q "HINDSIGHT-CUSTOM:START" "$target" 2>/dev/null; then
-        # Markers exist — replace content between them
-        local tmp="${target}.tmp"
         python3 -c "
-import sys
-marker_start = '$MARKER_START'
-marker_end = '$MARKER_END'
-with open('$target') as f:
-    lines = f.readlines()
-with open('$content_file') as f:
-    new_content = f.read()
-
-result = []
-inside = False
-replaced = False
-for line in lines:
-    if marker_start in line:
-        inside = True
-        result.append(new_content + '\n')
-        replaced = True
-        continue
-    if marker_end in line:
-        inside = False
-        continue
-    if not inside:
-        result.append(line)
-
-with open('$target', 'w') as f:
-    f.writelines(result)
+ms, me = '$MARKER_START', '$MARKER_END'
+with open('$target') as f: lines = f.readlines()
+with open('$content_file') as f: new = f.read()
+out, inside = [], False
+for l in lines:
+    if ms in l: inside = True; out.append(new + '\n'); continue
+    if me in l: inside = False; continue
+    if not inside: out.append(l)
+with open('$target','w') as f: f.writelines(out)
 " 2>/dev/null
     else
-        # No markers — append marked content
         echo "" >> "$target"
         cat "$content_file" >> "$target"
     fi
 }
 
-# Strip a marked section from a file.
-# Usage: strip_section <file>
 strip_section() {
     local target="$1"
-    if [ ! -f "$target" ]; then return; fi
-    if ! grep -q "HINDSIGHT-CUSTOM:START" "$target" 2>/dev/null; then return; fi
-
+    [ ! -f "$target" ] && return
+    grep -q "HINDSIGHT-CUSTOM:START" "$target" 2>/dev/null || return
     python3 -c "
-marker_start = 'HINDSIGHT-CUSTOM:START'
-marker_end = 'HINDSIGHT-CUSTOM:END'
-with open('$target') as f:
-    lines = f.readlines()
-
-result = []
-inside = False
-for line in lines:
-    if marker_start in line:
-        inside = True
-        continue
-    if marker_end in line:
-        inside = False
-        continue
-    if not inside:
-        result.append(line)
-
-# Strip trailing blank lines left behind
-while result and result[-1].strip() == '':
-    result.pop()
-
-with open('$target', 'w') as f:
-    f.writelines(result)
-    f.write('\n')
+ms, me = 'HINDSIGHT-CUSTOM:START', 'HINDSIGHT-CUSTOM:END'
+with open('$target') as f: lines = f.readlines()
+out, inside = [], False
+for l in lines:
+    if ms in l: inside = True; continue
+    if me in l: inside = False; continue
+    if not inside: out.append(l)
+while out and out[-1].strip() == '': out.pop()
+with open('$target','w') as f: f.writelines(out); f.write('\n')
 " 2>/dev/null
 }
 
-cleanup() { rm -rf "$TEMP_DIR"; }
-trap cleanup EXIT
+# ── agent detection ─────────────────────────────────────────────────────────
 
-# Parse args
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --agents) INSTALL_AGENTS="$2"; shift 2 ;;
-        --all) INSTALL_AGENTS="all"; shift ;;
-        --uninstall) UNINSTALL=true; shift ;;
-        -h|--help)
-            echo "Usage: install.sh [--agents hermes,claude-code,...] [--all] [--uninstall]"
-            echo ""
-            echo "Options:"
-            echo "  --agents LIST   Comma-separated list of agents to install"
-            echo "  --all           Install all agents without prompting"
-            echo "  --uninstall     Remove everything"
-            echo "  -h, --help      Show this help"
-            echo ""
-            echo "Available agents: hermes, claude-code, opencode, codex, copilot"
-            exit 0
-            ;;
-        *) echo "Unknown option: $1 (try --help)"; exit 1 ;;
-    esac
-done
-
-echo "=== Hindsight Project Memory Installer ==="
-echo ""
-
-# --- Detect installed agents -------------------------------------------------
-
-declare -A AGENT_FOUND
-AGENT_LIST="hermes claude-code opencode codex copilot"
+declare -A AGENT_LABEL
+declare -A AGENT_INSTALLED  # 1 = has hindsight configured, 0 = not
 
 detect_agents() {
-    # Hermes Agent
-    if [ -d "$HOME/.hermes" ] && [ -f "$HOME/.hermes/config.yaml" ]; then
-        AGENT_FOUND[hermes]="Hermes Agent (~/.hermes)"
+    AGENT_LABEL[hermes]="Hermes Agent"
+    AGENT_LABEL[claude-code]="Claude Code"
+    AGENT_LABEL[opencode]="OpenCode"
+    AGENT_LABEL[codex]="Codex CLI"
+    AGENT_LABEL[copilot]="GitHub Copilot"
+
+    # Hermes — check if plugin dir has our __init__.py
+    if [ -d "$HOME/.hermes" ]; then
+        if [ -f "$HOME/.hermes/plugins/hindsight-custom/__init__.py" ]; then
+            AGENT_INSTALLED[hermes]=1
+        else
+            AGENT_INSTALLED[hermes]=0
+        fi
     fi
 
-    # Claude Code
+    # Claude Code — check settings.json for hindsight MCP entry
     if command -v claude &>/dev/null || [ -d "$HOME/.claude" ]; then
-        AGENT_FOUND[claude-code]="Claude Code"
+        if [ -f "$HOME/.claude/settings.json" ] && command -v python3 &>/dev/null && \
+           python3 -c "import json; d=json.load(open('$HOME/.claude/settings.json')); assert 'hindsight' in d.get('mcpServers',{})" 2>/dev/null; then
+            AGENT_INSTALLED[claude-code]=1
+        else
+            AGENT_INSTALLED[claude-code]=0
+        fi
     fi
 
-    # OpenCode
+    # OpenCode — check opencode.json for hindsight MCP
     if command -v opencode &>/dev/null || [ -f "$HOME/.config/opencode/opencode.json" ]; then
-        AGENT_FOUND[opencode]="OpenCode"
+        if [ -f "$HOME/.config/opencode/opencode.json" ] && command -v python3 &>/dev/null && \
+           python3 -c "import json; d=json.load(open('$HOME/.config/opencode/opencode.json')); assert 'hindsight' in d.get('mcp',{})" 2>/dev/null; then
+            AGENT_INSTALLED[opencode]=1
+        else
+            AGENT_INSTALLED[opencode]=0
+        fi
     fi
 
-    # Codex CLI
+    # Codex — check hooks.json for hindsight hooks
     if command -v codex &>/dev/null || [ -d "$HOME/.codex" ]; then
-        AGENT_FOUND[codex]="Codex CLI"
+        if [ -f "$HOME/.codex/hooks.json" ] && command -v python3 &>/dev/null && \
+           python3 -c "
+import json
+d=json.load(open('$HOME/.codex/hooks.json'))
+hooks=d.get('hooks',{})
+found=False
+for ev,hlist in hooks.items():
+    for h in hlist:
+        if 'hindsight' in ' '.join(h.get('args',[])): found=True
+assert found
+" 2>/dev/null; then
+            AGENT_INSTALLED[codex]=1
+        else
+            AGENT_INSTALLED[codex]=0
+        fi
     fi
 
-    # GitHub Copilot (VS Code)
+    # Copilot — check .vscode/mcp.json for hindsight
     if [ -d "$HOME/.vscode" ] || command -v code &>/dev/null; then
-        AGENT_FOUND[copilot]="GitHub Copilot (VS Code)"
+        if [ -f "$HOME/.vscode/mcp.json" ] && command -v python3 &>/dev/null && \
+           python3 -c "import json; d=json.load(open('$HOME/.vscode/mcp.json')); assert 'hindsight' in d.get('servers',{})" 2>/dev/null; then
+            AGENT_INSTALLED[copilot]=1
+        else
+            AGENT_INSTALLED[copilot]=0
+        fi
     fi
 }
 
-prompt_user() {
-    local detected_count=${#AGENT_FOUND[@]}
+# ── checkbox selector ───────────────────────────────────────────────────────
+# Usage: checkbox_select <filter> <pre_selected>
+# filter: "all", "installed", "not-installed"
+# pre_selected: "all-installed", "none", "all"
+# Sets: INSTALL_AGENTS (comma-separated)
 
-    if [ "$detected_count" -eq 0 ]; then
-        echo "No supported agents detected."
-        echo "Available agents: $AGENT_LIST"
-        echo ""
-        ask "Enter agents to install (comma-separated, or 'all'): " choice ""
-        if [ -z "$choice" ]; then
-            echo "No agents selected. Exiting."
-            exit 0
-        fi
-        INSTALL_AGENTS="$choice"
-        return
+checkbox_select() {
+    local filter="${1:-all}"
+    local pre_selected="${2:-none}"
+
+    local -a KEY_LIST=()
+    local -a LABEL_LIST=()
+    local -a STATE_LIST=()
+
+    for agent in $AGENT_LIST; do
+        [ -z "${AGENT_INSTALLED[$agent]+x}" ] && continue
+
+        local is_installed="${AGENT_INSTALLED[$agent]}"
+
+        # Apply filter
+        case "$filter" in
+            installed)      [ "$is_installed" -ne 1 ] && continue ;;
+            not-installed)  [ "$is_installed" -ne 0 ] && continue ;;
+        esac
+
+        KEY_LIST+=("$agent")
+        LABEL_LIST+=("${AGENT_LABEL[$agent]}")
+
+        # Pre-selection
+        case "$pre_selected" in
+            all-installed) STATE_LIST+=$(( is_installed )) ;;
+            all)           STATE_LIST+=(1) ;;
+            *)             STATE_LIST+=(0) ;;
+        esac
+    done
+
+    local count=${#KEY_LIST[@]}
+    if [ "$count" -eq 0 ]; then
+        echo "  No matching agents found."
+        return 1
     fi
 
-    # Build agent list — all deselected by default
-    local -a AGENT_KEYS=()
-    local -a AGENT_LABELS=()
-    local -a AGENT_STATE=()  # 1=selected, 0=not
-    for agent in $AGENT_LIST; do
-        if [ -n "${AGENT_FOUND[$agent]+x}" ]; then
-            AGENT_KEYS+=("$agent")
-            AGENT_LABELS+=("${AGENT_FOUND[$agent]}")
-            AGENT_STATE+=(0)
-        fi
-    done
-    local count=${#AGENT_KEYS[@]}
     local cursor=0
-    local need_draw=1
+    local _drawn=0
 
-    # Save terminal state and switch stdin to /dev/tty
-    exec 3<&0            # save original stdin (the pipe)
-    exec 0</dev/tty      # redirect stdin to terminal
+    exec 3<&0
+    exec 0</dev/tty
     local old_stty
     old_stty=$(stty -g)
     stty -echo -icanon min 0 time 0
 
     draw() {
-        # Move cursor up to overwrite previous draw
-        if [ "$_drawn" -gt 0 ]; then
-            printf "\033[%dA" "$_drawn"
-        fi
-
+        [ "$_drawn" -gt 0 ] && printf "\033[%dA" "$_drawn"
         local lines=0
 
         for i in $(seq 0 $((count - 1))); do
-            printf "\033[2K"  # clear line
+            printf "\033[2K"
 
-            # Cursor indicator
-            if [ "$i" -eq "$cursor" ]; then
-                printf "  \033[36m>\033[0m "
-            else
-                printf "    "
-            fi
+            # Cursor
+            [ "$i" -eq "$cursor" ] && printf "  \033[36m>\033[0m " || printf "    "
 
             # Checkbox
-            if [ "${AGENT_STATE[$i]}" -eq 1 ]; then
+            if [ "${STATE_LIST[$i]}" -eq 1 ]; then
                 printf "\033[32m[x]\033[0m "
             else
                 printf "[ ] "
             fi
 
-            # Label
-            printf "%d. %s (%s)\n" "$((i + 1))" "${AGENT_LABELS[$i]}" "${AGENT_KEYS[$i]}"
+            # Label + installed badge
+            local badge=""
+            local agent_key="${KEY_LIST[$i]}"
+            if [ "${AGENT_INSTALLED[$agent_key]:-0}" -eq 1 ]; then
+                badge=" \033[90m(installed)\033[0m"
+            fi
+            printf "%d. %s%b" "$((i + 1))" "${LABEL_LIST[$i]}" "$badge"
+            printf "\n"
             lines=$((lines + 1))
         done
 
-        # Hint bar
         printf "\033[2K\033[90m  ↑↓ navigate   space toggle   enter confirm\033[0m\n"
         lines=$((lines + 1))
-
         _drawn=$lines
     }
 
-    # Reserve space and do initial draw
-    local _drawn=0
     echo ""
     for _ in $(seq 1 $((count + 1))); do echo ""; done
     draw
@@ -292,660 +261,548 @@ prompt_user() {
     while true; do
         local key=""
         IFS= read -rsn1 key
-
-        # Handle escape sequences (arrow keys)
         if [[ "$key" == $'\x1b' ]]; then
             IFS= read -rsn1 -t 0.1 key
             if [[ "$key" == "[" ]]; then
                 IFS= read -rsn1 -t 0.1 key
                 case "$key" in
-                    A) # Up
-                        cursor=$(( (cursor - 1 + count) % count ))
-                        draw
-                        ;;
-                    B) # Down
-                        cursor=$(( (cursor + 1) % count ))
-                        draw
-                        ;;
+                    A) cursor=$(( (cursor - 1 + count) % count )); draw ;;
+                    B) cursor=$(( (cursor + 1) % count )); draw ;;
                 esac
             fi
         elif [[ "$key" == " " ]]; then
-            # Toggle
-            if [ "${AGENT_STATE[$cursor]}" -eq 1 ]; then
-                AGENT_STATE[$cursor]=0
-            else
-                AGENT_STATE[$cursor]=1
-            fi
+            STATE_LIST[$cursor]=$(( 1 - STATE_LIST[$cursor] ))
             draw
         elif [[ "$key" == "" ]] || [[ "$key" == $'\n' ]]; then
-            # Enter = confirm
             break
         fi
     done
 
-    # Restore terminal and stdin
     stty "$old_stty"
     exec 0<&3 3<&-
 
-    # Collect selected agents
     INSTALL_AGENTS=""
     for i in $(seq 0 $((count - 1))); do
-        if [ "${AGENT_STATE[$i]}" -eq 1 ]; then
+        if [ "${STATE_LIST[$i]}" -eq 1 ]; then
             [ -n "$INSTALL_AGENTS" ] && INSTALL_AGENTS="$INSTALL_AGENTS,"
-            INSTALL_AGENTS="$INSTALL_AGENTS${AGENT_KEYS[$i]}"
+            INSTALL_AGENTS="$INSTALL_AGENTS${KEY_LIST[$i]}"
         fi
     done
 
-    if [ -z "$INSTALL_AGENTS" ]; then
-        echo ""
-        echo "No agents selected. Exiting."
-        exit 0
+    return 0
+}
+
+has_agent() {
+    echo ",$INSTALL_AGENTS," | grep -q ",$1," 2>/dev/null
+}
+
+# ── source fetching ─────────────────────────────────────────────────────────
+
+fetch_source() {
+    echo "[*] Fetching source ..."
+    local fetched=false
+
+    if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
+        gh repo clone "$REPO" "$TEMP_DIR/repo" -- --depth=1 --quiet 2>/dev/null && fetched=true
+    fi
+    if ! $fetched; then
+        git clone --depth=1 "git@github.com:$REPO.git" "$TEMP_DIR/repo" --quiet 2>/dev/null && fetched=true
+    fi
+    if ! $fetched; then
+        mkdir -p "$TEMP_DIR/flat"
+        for f in core/__init__.py core/project.py core/config.py core/client.py \
+                 mcp_server/__init__.py mcp_server/__main__.py mcp_server/server.py \
+                 integrations/copilot/copilot-instructions.md; do
+            curl -fsSL "$BASE_URL/$f" -o "$TEMP_DIR/flat/$(basename "$f")" 2>/dev/null || true
+        done
+        fetched=true
+    fi
+
+    if [ -d "$TEMP_DIR/repo/core" ]; then
+        SRC="$TEMP_DIR/repo"
+    elif [ -d "$TEMP_DIR/flat" ]; then
+        SRC="$TEMP_DIR/flat"
+    else
+        echo "ERROR: Could not fetch source."
+        exit 1
+    fi
+}
+
+# ── config setup ────────────────────────────────────────────────────────────
+
+setup_config() {
+    echo "[*] Config ..."
+
+    local api_url="https://api.hindsight.vectorize.io"
+    local api_key=""
+    local has_key=false
+
+    # Check existing config
+    if [ -f "$CONFIG_FILE" ] && command -v python3 &>/dev/null; then
+        api_url=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('api_url',''))" 2>/dev/null || echo "$api_url")
+        api_key=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('apiKey',''))" 2>/dev/null || echo "")
+        [ -n "$api_key" ] && has_key=true
+    fi
+
+    # Check env
+    if [ -n "${HINDSIGHT_API_KEY:-}" ]; then
+        api_key="$HINDSIGHT_API_KEY"
+        has_key=true
+    fi
+
+    if [ -f "$CONFIG_FILE" ]; then
+        echo "      Config exists: $CONFIG_FILE"
+        ask "      Reconfigure? [y/N]: " reconfig "N"
+        [ "$reconfig" != "y" ] && [ "$reconfig" != "Y" ] && return
     fi
 
     echo ""
-    echo "Will install for: $INSTALL_AGENTS"
+    echo "      Hindsight endpoint:"
+    echo "      [1] Cloud (https://api.hindsight.vectorize.io)"
+    echo "      [2] Self-hosted"
+    ask "      Select [1]: " ep "1"
+    [ "$ep" = "2" ] && ask "      URL: " api_url ""
+
     echo ""
+    ask "      API key (blank to skip): " api_key ""
+    [ -n "$api_key" ] && has_key=true
+
+    mkdir -p "$CONFIG_DIR"
+    python3 -c "
+import json
+json.dump({'api_url':'$api_url','apiKey':'$api_key','timeout':300,'budget':'mid',
+    'search_shared':True,'auto_retain':True,'retain_every_n_turns':3,'recall_max_input_chars':800},
+    open('$CONFIG_FILE','w'),indent=2)
+" 2>/dev/null
+    echo "      Saved: $CONFIG_FILE"
 }
 
-should_install() {
-    local agent="$1"
-    if [ "$INSTALL_AGENTS" = "all" ]; then return 0; fi
-    echo ",$INSTALL_AGENTS," | grep -q ",$agent," 2>/dev/null
+# ── core install ────────────────────────────────────────────────────────────
+
+install_core() {
+    echo "[*] Installing core library + MCP server ..."
+    mkdir -p "$INSTALL_DIR/core" "$INSTALL_DIR/mcp_server"
+    cp "$SRC/core/__init__.py" "$INSTALL_DIR/core/"
+    cp "$SRC/core/project.py" "$INSTALL_DIR/core/"
+    cp "$SRC/core/config.py" "$INSTALL_DIR/core/"
+    cp "$SRC/core/client.py" "$INSTALL_DIR/core/"
+    cp "$SRC/mcp_server/__init__.py" "$INSTALL_DIR/mcp_server/"
+    cp "$SRC/mcp_server/__main__.py" "$INSTALL_DIR/mcp_server/"
+    cp "$SRC/mcp_server/server.py" "$INSTALL_DIR/mcp_server/"
+    echo "      $INSTALL_DIR"
+
+    # Python deps
+    if command -v pip3 &>/dev/null; then
+        pip3 install --user --quiet hindsight-client mcp 2>/dev/null || true
+    elif command -v uv &>/dev/null; then
+        uv pip install --quiet hindsight-client mcp 2>/dev/null || true
+    fi
 }
 
-# --- Detect and prompt -------------------------------------------------------
+# ── agent install ───────────────────────────────────────────────────────────
 
-detect_agents
-
-if [ -z "$INSTALL_AGENTS" ]; then
-    prompt_user
-fi
-
-echo "Installing for: $INSTALL_AGENTS"
-echo ""
-
-# --- Fetch source -----------------------------------------------------------
-
-echo "[*] Fetching source ..."
-FETCHED=false
-
-if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
-    if gh repo clone "$REPO" "$TEMP_DIR/repo" -- --depth=1 --quiet 2>/dev/null; then
-        FETCHED=true
+install_hermes() {
+    local dir="$HOME/.hermes/plugins/hindsight-custom"
+    mkdir -p "$dir"
+    cp "$SRC/integrations/hermes/__init__.py" "$dir/"
+    [ ! -d "$dir/core" ] && ln -s "$INSTALL_DIR/core" "$dir/core" 2>/dev/null || cp -r "$INSTALL_DIR/core" "$dir/core"
+    if [ -f "$HOME/.hermes/config.yaml" ]; then
+        backup "$HOME/.hermes/config.yaml"
+        if grep -q "provider: hindsight-custom" "$HOME/.hermes/config.yaml"; then
+            echo "  [✓] Hermes — already active"
+        elif grep -q "provider: hindsight" "$HOME/.hermes/config.yaml"; then
+            sed -i 's/provider: hindsight$/provider: hindsight-custom/' "$HOME/.hermes/config.yaml"
+            echo "  [✓] Hermes — activated"
+        fi
     fi
-fi
+}
 
-if ! $FETCHED; then
-    if git clone --depth=1 "git@github.com:$REPO.git" "$TEMP_DIR/repo" --quiet 2>/dev/null; then
-        FETCHED=true
+install_claude() {
+    local dir="$HOME/.claude"
+    mkdir -p "$dir/hooks"
+    cp "$SRC/integrations/claude-code/hooks/recall.sh" "$dir/hooks/hindsight-recall.sh"
+    cp "$SRC/integrations/claude-code/hooks/retain.sh" "$dir/hooks/hindsight-retain.sh"
+    chmod +x "$dir/hooks/"hindsight-*.sh
+    local settings="$dir/settings.json"
+    backup "$settings"
+    if [ -f "$settings" ] && command -v python3 &>/dev/null; then
+        python3 -c "
+import json
+with open('$settings') as f: cfg=json.load(f)
+cfg.setdefault('mcpServers',{})['hindsight']={'command':'python3','args':['-m','mcp_server'],'cwd':'$INSTALL_DIR'}
+with open('$settings','w') as f: json.dump(cfg,f,indent=2); f.write('\n')
+" 2>/dev/null
+    else
+        mkdir -p "$dir"
+        echo "{\"mcpServers\":{\"hindsight\":{\"command\":\"python3\",\"args\":[\"-m\",\"mcp_server\"],\"cwd\":\"$INSTALL_DIR\"}}}" > "$settings"
     fi
-fi
+    echo "  [✓] Claude Code"
+}
 
-if ! $FETCHED; then
-    mkdir -p "$TEMP_DIR/flat"
-    for f in core/__init__.py core/project.py core/config.py core/client.py \
-             mcp_server/__init__.py mcp_server/__main__.py mcp_server/server.py \
-             pyproject.toml; do
-        curl -fsSL "$BASE_URL/$f" -o "$TEMP_DIR/flat/$(basename "$f")" 2>/dev/null || true
-    done
-    FETCHED=true
-fi
+install_opencode() {
+    local cfg="$HOME/.config/opencode/opencode.json"
+    backup "$cfg"
+    if [ -f "$cfg" ] && command -v python3 &>/dev/null; then
+        python3 -c "
+import json
+with open('$cfg') as f: d=json.load(f)
+d.setdefault('mcp',{})['hindsight']={'command':'python3','args':['-m','mcp_server'],'cwd':'$INSTALL_DIR'}
+with open('$cfg','w') as f: json.dump(d,f,indent=2); f.write('\n')
+" 2>/dev/null
+    else
+        mkdir -p "$(dirname "$cfg")"
+        echo "{\"mcp\":{\"hindsight\":{\"command\":\"python3\",\"args\":[\"-m\",\"mcp_server\"],\"cwd\":\"$INSTALL_DIR\"}}}" > "$cfg"
+    fi
+    echo "  [✓] OpenCode"
+}
 
-if ! $FETCHED; then
-    echo "ERROR: Could not fetch source from github.com:$REPO"
-    exit 1
-fi
+install_codex() {
+    local dir="$HOME/.codex"
+    mkdir -p "$dir/hooks"
+    cp "$SRC/integrations/codex/hooks/recall.py" "$dir/hooks/hindsight-recall.py"
+    cp "$SRC/integrations/codex/hooks/retain.py" "$dir/hooks/hindsight-retain.py"
+    chmod +x "$dir/hooks/"hindsight-*.py
 
-# Resolve source root
-if [ -d "$TEMP_DIR/repo/core" ]; then
-    SRC="$TEMP_DIR/repo"
-elif [ -d "$TEMP_DIR/flat" ]; then
-    SRC="$TEMP_DIR/flat"
-else
-    echo "ERROR: Source not found after fetch."
-    exit 1
-fi
+    # hooks.json
+    local hooks_json="$dir/hooks.json"
+    backup "$hooks_json"
+    python3 -c "
+import json, os
+hd='$dir/hooks'
+new={'UserPromptSubmit':[{'command':'python3','args':[os.path.join(hd,'hindsight-recall.py')]}],
+     'Stop':[{'command':'python3','args':[os.path.join(hd,'hindsight-retain.py')]}]}
+d={}
+try:
+    with open('$hooks_json') as f: d=json.load(f)
+except: pass
+d.setdefault('hooks',{})
+for ev,hooks in new.items():
+    old=[h for h in d['hooks'].get(ev,[]) if 'hindsight' not in ' '.join(h.get('args',[]))]
+    d['hooks'][ev]=old+hooks
+with open('$hooks_json','w') as f: json.dump(d,f,indent=2)
+" 2>/dev/null
 
-# --- Uninstall ---------------------------------------------------------------
+    # config.toml
+    local toml="$dir/config.toml"
+    backup "$toml"
+    if [ -f "$toml" ]; then
+        grep -q "codex_hooks" "$toml" 2>/dev/null || echo -e "\n[features]\ncodex_hooks = true" >> "$toml"
+        grep -q "hindsight" "$toml" 2>/dev/null || cat >> "$toml" <<EOF
 
-if $UNINSTALL; then
-    echo "[*] Uninstalling ..."
+[mcp_servers.hindsight]
+command = "python3"
+args = ["-m", "mcp_server"]
+cwd = "$INSTALL_DIR"
+EOF
+    else
+        cat > "$toml" <<EOF
+[features]
+codex_hooks = true
 
-    # Hermes
+[mcp_servers.hindsight]
+command = "python3"
+args = ["-m", "mcp_server"]
+cwd = "$INSTALL_DIR"
+EOF
+    fi
+    echo "  [✓] Codex CLI"
+}
+
+install_copilot() {
+    local mcp="$HOME/.vscode/mcp.json"
+    backup "$mcp"
+    if [ -f "$mcp" ] && command -v python3 &>/dev/null; then
+        python3 -c "
+import json
+with open('$mcp') as f: d=json.load(f)
+d.setdefault('servers',{})['hindsight']={'command':'python3','args':['-m','mcp_server'],'cwd':'$INSTALL_DIR'}
+with open('$mcp','w') as f: json.dump(d,f,indent=2); f.write('\n')
+" 2>/dev/null
+    else
+        mkdir -p "$HOME/.vscode"
+        echo "{\"servers\":{\"hindsight\":{\"command\":\"python3\",\"args\":[\"-m\",\"mcp_server\"],\"cwd\":\"$INSTALL_DIR\"}}}" > "$mcp"
+    fi
+
+    local instructions="$HOME/.github/copilot-instructions.md"
+    mkdir -p "$HOME/.github"
+    backup "$instructions"
+    inject_section "$instructions" "$SRC/integrations/copilot/copilot-instructions.md"
+    echo "  [✓] Copilot"
+}
+
+# ── agent uninstall ─────────────────────────────────────────────────────────
+
+uninstall_hermes() {
     rm -rf "$HOME/.hermes/plugins/hindsight-custom" 2>/dev/null || true
-    rm -rf "$HOME/.hermes/hindsight-custom" 2>/dev/null || true
     if [ -f "$HOME/.hermes/config.yaml" ]; then
         backup "$HOME/.hermes/config.yaml"
         sed -i 's/provider: hindsight-custom/provider: hindsight/' "$HOME/.hermes/config.yaml" 2>/dev/null || true
     fi
-    echo "  [x] Hermes plugin removed"
+    echo "  [x] Hermes"
+}
 
-    # Claude Code
-    rm -f "$HOME/.claude/hooks/hindsight-recall.sh" 2>/dev/null || true
-    rm -f "$HOME/.claude/hooks/hindsight-retain.sh" 2>/dev/null || true
+uninstall_claude() {
+    rm -f "$HOME/.claude/hooks/hindsight-recall.sh" "$HOME/.claude/hooks/hindsight-retain.sh" 2>/dev/null || true
     if [ -f "$HOME/.claude/settings.json" ] && command -v python3 &>/dev/null; then
         backup "$HOME/.claude/settings.json"
         python3 -c "
 import json
-path = '$HOME/.claude/settings.json'
-with open(path) as f:
-    cfg = json.load(f)
-if 'mcpServers' in cfg and 'hindsight' in cfg['mcpServers']:
-    del cfg['mcpServers']['hindsight']
-    if not cfg['mcpServers']:
-        del cfg['mcpServers']
-with open(path, 'w') as f:
-    json.dump(cfg, f, indent=2)
-    f.write('\n')
+p='$HOME/.claude/settings.json'
+with open(p) as f: d=json.load(f)
+d.get('mcpServers',{}).pop('hindsight',None)
+if 'mcpServers' in d and not d['mcpServers']: del d['mcpServers']
+with open(p,'w') as f: json.dump(d,f,indent=2); f.write('\n')
 " 2>/dev/null || true
     fi
-    echo "  [x] Claude Code hooks + MCP removed"
+    echo "  [x] Claude Code"
+}
 
-    # Codex CLI
-    if [ -f "$HOME/.codex/hooks.json" ] && command -v python3 &>/dev/null; then
-        backup "$HOME/.codex/hooks.json"
-        python3 -c "
-import json, os
-path = '$HOME/.codex/hooks.json'
-with open(path) as f:
-    cfg = json.load(f)
-if 'hooks' in cfg:
-    for event in list(cfg['hooks'].keys()):
-        cfg['hooks'][event] = [h for h in cfg['hooks'][event] if 'hindsight' not in ' '.join(h.get('args', []))]
-        if not cfg['hooks'][event]:
-            del cfg['hooks'][event]
-if not cfg.get('hooks'):
-    os.remove(path)
-else:
-    with open(path, 'w') as f:
-        json.dump(cfg, f, indent=2)
-" 2>/dev/null || true
-    fi
-    rm -f "$HOME/.codex/hooks/hindsight-recall.py" "$HOME/.codex/hooks/hindsight-retain.py" 2>/dev/null || true
-    if [ -f "$HOME/.codex/config.toml" ] && command -v python3 &>/dev/null; then
-        backup "$HOME/.codex/config.toml"
-        python3 -c "
-import re
-path = '$HOME/.codex/config.toml'
-with open(path) as f:
-    content = f.read()
-content = re.sub(r'\n?\[features\]\ncodex_hooks\s*=\s*true\n?', '\n', content)
-content = re.sub(r'\n?\[mcp_servers\.hindsight\]\n.*?cwd\s*=.*?\n', '\n', content, flags=re.DOTALL)
-content = re.sub(r'\n{3,}', '\n\n', content)
-with open(path, 'w') as f:
-    f.write(content)
-" 2>/dev/null || true
-    fi
-    echo "  [x] Codex CLI hooks + MCP removed"
-
-    # OpenCode
+uninstall_opencode() {
     if [ -f "$HOME/.config/opencode/opencode.json" ] && command -v python3 &>/dev/null; then
         backup "$HOME/.config/opencode/opencode.json"
         python3 -c "
 import json
-path = '$HOME/.config/opencode/opencode.json'
-with open(path) as f:
-    cfg = json.load(f)
-if 'mcp' in cfg and 'hindsight' in cfg['mcp']:
-    del cfg['mcp']['hindsight']
-    if not cfg['mcp']:
-        del cfg['mcp']
-with open(path, 'w') as f:
-    json.dump(cfg, f, indent=2)
-    f.write('\n')
+p='$HOME/.config/opencode/opencode.json'
+with open(p) as f: d=json.load(f)
+d.get('mcp',{}).pop('hindsight',None)
+if 'mcp' in d and not d['mcp']: del d['mcp']
+with open(p,'w') as f: json.dump(d,f,indent=2); f.write('\n')
 " 2>/dev/null || true
     fi
-    echo "  [x] OpenCode MCP removed"
+    echo "  [x] OpenCode"
+}
 
-    # VS Code / Copilot
+uninstall_codex() {
+    rm -f "$HOME/.codex/hooks/hindsight-recall.py" "$HOME/.codex/hooks/hindsight-retain.py" 2>/dev/null || true
+    if [ -f "$HOME/.codex/hooks.json" ] && command -v python3 &>/dev/null; then
+        backup "$HOME/.codex/hooks.json"
+        python3 -c "
+import json,os
+p='$HOME/.codex/hooks.json'
+with open(p) as f: d=json.load(f)
+for ev in list(d.get('hooks',{}).keys()):
+    d['hooks'][ev]=[h for h in d['hooks'][ev] if 'hindsight' not in ' '.join(h.get('args',[]))]
+    if not d['hooks'][ev]: del d['hooks'][ev]
+if not d.get('hooks'): os.remove(p)
+else:
+    with open(p,'w') as f: json.dump(d,f,indent=2)
+" 2>/dev/null || true
+    fi
+    if [ -f "$HOME/.codex/config.toml" ] && command -v python3 &>/dev/null; then
+        backup "$HOME/.codex/config.toml"
+        python3 -c "
+import re
+p='$HOME/.codex/config.toml'
+with open(p) as f: c=f.read()
+c=re.sub(r'\n?\[features\]\ncodex_hooks\s*=\s*true\n?','\n',c)
+c=re.sub(r'\n?\[mcp_servers\.hindsight\]\n.*?cwd\s*=.*?\n','\n',c,flags=re.S)
+c=re.sub(r'\n{3,}','\n\n',c)
+with open(p,'w') as f: f.write(c)
+" 2>/dev/null || true
+    fi
+    echo "  [x] Codex CLI"
+}
+
+uninstall_copilot() {
     if [ -f "$HOME/.vscode/mcp.json" ] && command -v python3 &>/dev/null; then
         backup "$HOME/.vscode/mcp.json"
         python3 -c "
-import json
-path = '$HOME/.vscode/mcp.json'
-with open(path) as f:
-    cfg = json.load(f)
-if 'servers' in cfg and 'hindsight' in cfg['servers']:
-    del cfg['servers']['hindsight']
-    if not cfg['servers']:
-        del cfg['servers']
-if cfg:
-    with open(path, 'w') as f:
-        json.dump(cfg, f, indent=2)
-        f.write('\n')
-else:
-    import os
-    os.remove(path)
+import json,os
+p='$HOME/.vscode/mcp.json'
+with open(p) as f: d=json.load(f)
+d.get('servers',{}).pop('hindsight',None)
+if 'servers' in d and not d['servers']: del d['servers']
+if d:
+    with open(p,'w') as f: json.dump(d,f,indent=2); f.write('\n')
+else: os.remove(p)
 " 2>/dev/null || true
     fi
     strip_section "$HOME/.github/copilot-instructions.md"
-    echo "  [x] Copilot MCP + instructions removed"
+    echo "  [x] Copilot"
+}
 
-    # Config (keep backups)
-    if [ -d "$CONFIG_DIR" ]; then
-        rm -rf "$CONFIG_DIR/lib" 2>/dev/null || true
-        rm -f "$CONFIG_DIR/config.json" 2>/dev/null || true
-        # Keep backups directory
-        if [ -d "$CONFIG_DIR/backups" ]; then
-            echo "  [~] Config removed (backups kept at $CONFIG_DIR/backups/)"
-        else
-            rm -rf "$CONFIG_DIR" 2>/dev/null || true
-            echo "  [x] Config removed"
+# ── mode: install ───────────────────────────────────────────────────────────
+
+mode_install() {
+    echo ""
+    echo "Select agents to install:"
+    echo ""
+
+    if ! checkbox_select "all" "all-installed"; then
+        echo "No agents available."
+        return
+    fi
+
+    if [ -z "$INSTALL_AGENTS" ]; then
+        echo "No agents selected."
+        return
+    fi
+
+    echo ""
+    echo "Installing for: $INSTALL_AGENTS"
+    echo ""
+
+    setup_config
+    install_core
+
+    echo "[*] Configuring agents ..."
+    has_agent hermes      && install_hermes
+    has_agent claude-code && install_claude
+    has_agent opencode    && install_opencode
+    has_agent codex       && install_codex
+    has_agent copilot     && install_copilot
+
+    echo ""
+    echo "=== Done ==="
+    echo "Config: $CONFIG_FILE"
+    echo "Restart your agents to activate."
+}
+
+# ── mode: update ────────────────────────────────────────────────────────────
+
+mode_update() {
+    echo ""
+    echo "Updating MCP server and core library ..."
+    echo ""
+
+    install_core
+
+    # Re-deploy hermes plugin if installed
+    if [ -f "$HOME/.hermes/plugins/hindsight-custom/__init__.py" ]; then
+        cp "$SRC/integrations/hermes/__init__.py" "$HOME/.hermes/plugins/hindsight-custom/"
+        echo "  [✓] Hermes plugin updated"
+    fi
+
+    # Re-deploy hooks if installed
+    if [ -f "$HOME/.claude/hooks/hindsight-recall.sh" ]; then
+        cp "$SRC/integrations/claude-code/hooks/recall.sh" "$HOME/.claude/hooks/hindsight-recall.sh"
+        cp "$SRC/integrations/claude-code/hooks/retain.sh" "$HOME/.claude/hooks/hindsight-retain.sh"
+        chmod +x "$HOME/.claude/hooks/"hindsight-*.sh
+        echo "  [✓] Claude Code hooks updated"
+    fi
+    if [ -f "$HOME/.codex/hooks/hindsight-recall.py" ]; then
+        cp "$SRC/integrations/codex/hooks/recall.py" "$HOME/.codex/hooks/hindsight-recall.py"
+        cp "$SRC/integrations/codex/hooks/retain.py" "$HOME/.codex/hooks/hindsight-retain.py"
+        chmod +x "$HOME/.codex/hooks/"hindsight-*.py
+        echo "  [✓] Codex CLI hooks updated"
+    fi
+
+    echo ""
+    echo "=== Updated ==="
+    echo "Restart your agents to pick up changes."
+}
+
+# ── mode: uninstall ─────────────────────────────────────────────────────────
+
+mode_uninstall() {
+    echo ""
+    echo "Select agents to uninstall:"
+    echo ""
+
+    if ! checkbox_select "installed" "all-installed"; then
+        echo "Nothing to uninstall."
+        return
+    fi
+
+    if [ -z "$INSTALL_AGENTS" ]; then
+        echo "No agents selected."
+        return
+    fi
+
+    echo ""
+    echo "Uninstalling from: $INSTALL_AGENTS"
+    echo ""
+
+    has_agent hermes      && uninstall_hermes
+    has_agent claude-code && uninstall_claude
+    has_agent opencode    && uninstall_opencode
+    has_agent codex       && uninstall_codex
+    has_agent copilot     && uninstall_copilot
+
+    # Remove core if no agents left
+    local any_installed=false
+    for agent in $AGENT_LIST; do
+        [ "${AGENT_INSTALLED[$agent]:-0}" -eq 1 ] && ! has_agent "$agent" && continue
+        [ "${AGENT_INSTALLED[$agent]:-0}" -eq 1 ] && any_installed=true
+    done
+
+    if ! $any_installed; then
+        ask "  Remove core library + config? [y/N]: " remove_core "N"
+        if [ "$remove_core" = "y" ] || [ "$remove_core" = "Y" ]; then
+            rm -rf "$INSTALL_DIR" 2>/dev/null || true
+            rm -f "$CONFIG_FILE" 2>/dev/null || true
+            [ -d "$CONFIG_DIR/backups" ] && echo "  [~] Config removed (backups kept)" || rm -rf "$CONFIG_DIR" 2>/dev/null || true
+            echo "  [x] Core library removed"
         fi
     fi
 
     echo ""
     echo "=== Uninstalled ==="
     echo "Restart your agents to complete removal."
-    exit 0
-fi
-
-# --- Install core ------------------------------------------------------------
-
-echo "[1/6] Installing core library ..."
-INSTALL_DIR="$CONFIG_DIR/lib"
-mkdir -p "$INSTALL_DIR/core" "$INSTALL_DIR/mcp_server"
-cp "$SRC/core/__init__.py" "$INSTALL_DIR/core/"
-cp "$SRC/core/project.py" "$INSTALL_DIR/core/"
-cp "$SRC/core/config.py" "$INSTALL_DIR/core/"
-cp "$SRC/core/client.py" "$INSTALL_DIR/core/"
-cp "$SRC/mcp_server/__init__.py" "$INSTALL_DIR/mcp_server/"
-cp "$SRC/mcp_server/__main__.py" "$INSTALL_DIR/mcp_server/"
-cp "$SRC/mcp_server/server.py" "$INSTALL_DIR/mcp_server/"
-echo "      $INSTALL_DIR/"
-
-# --- Install Python dependencies -------------------------------------------
-
-echo "[2/6] Installing Python dependencies ..."
-DEPS_INSTALLED=false
-if command -v pip3 &>/dev/null; then
-    pip3 install --user --quiet hindsight-client mcp 2>/dev/null && DEPS_INSTALLED=true || true
-fi
-if ! $DEPS_INSTALLED && command -v pip &>/dev/null; then
-    pip install --user --quiet hindsight-client mcp 2>/dev/null && DEPS_INSTALLED=true || true
-fi
-if ! $DEPS_INSTALLED && command -v uv &>/dev/null; then
-    uv pip install --quiet hindsight-client mcp 2>/dev/null && DEPS_INSTALLED=true || true
-fi
-if ! $DEPS_INSTALLED; then
-    echo "      WARNING: Could not auto-install deps."
-    echo "      Run manually: pip install hindsight-client mcp"
-fi
-
-# --- Config ------------------------------------------------------------------
-
-echo "[3/6] Setting up config ..."
-mkdir -p "$CONFIG_DIR"
-
-HAS_KEY=false
-API_URL="https://api.hindsight.vectorize.io"
-API_KEY=""
-
-# Check for existing key in env
-if [ -n "${HINDSIGHT_API_KEY:-}" ]; then
-    HAS_KEY=true
-    API_KEY="$HINDSIGHT_API_KEY"
-fi
-if [ -f "$HOME/.hermes/.env" ] && grep -q "HINDSIGHT_API_KEY" "$HOME/.hermes/.env" 2>/dev/null; then
-    HAS_KEY=true
-fi
-
-if [ -f "$CONFIG_FILE" ]; then
-    echo "      Config exists: $CONFIG_FILE"
-    if command -v python3 &>/dev/null; then
-        EXISTING_URL=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('api_url',''))" 2>/dev/null || echo "")
-        EXISTING_KEY=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('apiKey',''))" 2>/dev/null || echo "")
-        [ -n "$EXISTING_URL" ] && API_URL="$EXISTING_URL"
-        [ -n "$EXISTING_KEY" ] && API_KEY="$EXISTING_KEY" && HAS_KEY=true
-    fi
-    echo ""
-    ask "      Reconfigure endpoint and key? [y/N]: " reconfig "N"
-    if [ "$reconfig" != "y" ] && [ "$reconfig" != "Y" ]; then
-        echo "      Keeping existing config."
-    else
-        # Fall through to prompts below
-        rm -f "$CONFIG_FILE"
-    fi
-fi
-
-if [ ! -f "$CONFIG_FILE" ]; then
-    echo ""
-    echo "      Hindsight API Configuration"
-    echo "      ─────────────────────────────"
-    echo ""
-    echo "      [1] Default (https://api.hindsight.vectorize.io — cloud)"
-    echo "      [2] Self-hosted (enter your own URL)"
-    echo ""
-    ask "      Select endpoint [1]: " endpoint_choice "1"
-    endpoint_choice="${endpoint_choice:-1}"
-
-    if [ "$endpoint_choice" = "2" ]; then
-        ask "      Enter Hindsight API URL: " custom_url ""
-        if [ -n "$custom_url" ]; then
-            API_URL="$custom_url"
-        fi
-    fi
-
-    echo ""
-    ask "      Enter API key (leave blank to skip): " entered_key ""
-    if [ -n "$entered_key" ]; then
-        API_KEY="$entered_key"
-        HAS_KEY=true
-    fi
-
-    # Write config
-    python3 -c "
-import json
-config = {
-    'api_url': '$API_URL',
-    'apiKey': '$API_KEY',
-    'timeout': 300,
-    'budget': 'mid',
-    'search_shared': True,
-    'auto_retain': True,
-    'retain_every_n_turns': 3,
-    'recall_max_input_chars': 800
 }
-with open('$CONFIG_FILE', 'w') as f:
-    json.dump(config, f, indent=2)
-    f.write('\n')
-" 2>/dev/null || cat > "$CONFIG_FILE" <<DEFAULT_CFG
-{
-  "api_url": "$API_URL",
-  "apiKey": "$API_KEY",
-  "timeout": 300,
-  "budget": "mid",
-  "search_shared": true,
-  "auto_retain": true,
-  "retain_every_n_turns": 3,
-  "recall_max_input_chars": 800
-}
-DEFAULT_CFG
 
+# ── main ────────────────────────────────────────────────────────────────────
+
+echo "=== Hindsight Custom ==="
+echo ""
+
+# Parse CLI args
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        install|update|uninstall) MODE="$1"; shift ;;
+        --agents) INSTALL_AGENTS="$2"; shift 2 ;;
+        -h|--help)
+            echo "Usage: install.sh [install|update|uninstall] [--agents 1,3]"
+            echo ""
+            echo "  install    Configure agents + MCP server"
+            echo "  update     Update MCP server + core library only"
+            echo "  uninstall  Remove agent configs"
+            echo "  --agents   Pre-select agents by number (comma-separated)"
+            exit 0
+            ;;
+        *) echo "Unknown: $1"; exit 1 ;;
+    esac
+done
+
+# Detect installed agents
+detect_agents
+
+# Fetch source (needed for all modes)
+fetch_source
+
+# Mode selection
+if [ -z "$MODE" ]; then
+    # Show status summary
     echo ""
-    echo "      Created: $CONFIG_FILE"
-fi
-
-# --- Check credentials ------------------------------------------------------
-
-echo "[4/6] Checking credentials ..."
-if $HAS_KEY; then
-    echo "      API key configured."
-else
-    echo "      WARNING: No API key set."
-    echo "      Edit $CONFIG_FILE and set 'apiKey', or export HINDSIGHT_API_KEY"
-fi
-
-# --- Install agent integrations ---------------------------------------------
-
-echo "[5/6] Installing agent integrations ..."
-
-# Hermes Agent
-if should_install hermes; then
-    HERMES_PLUGIN_DIR="$HOME/.hermes/plugins/hindsight-custom"
-    mkdir -p "$HERMES_PLUGIN_DIR"
-    cp "$SRC/integrations/hermes/__init__.py" "$HERMES_PLUGIN_DIR/"
-    if [ ! -d "$HERMES_PLUGIN_DIR/core" ]; then
-        ln -s "$INSTALL_DIR/core" "$HERMES_PLUGIN_DIR/core" 2>/dev/null || \
-        cp -r "$INSTALL_DIR/core" "$HERMES_PLUGIN_DIR/core"
-    fi
-    HERMES_CONFIG="$HOME/.hermes/config.yaml"
-    backup "$HERMES_CONFIG"
-    if [ -f "$HERMES_CONFIG" ]; then
-        if grep -q "provider: hindsight-custom" "$HERMES_CONFIG"; then
-            echo "  [✓] Hermes — already active"
-        elif grep -q "provider: hindsight" "$HERMES_CONFIG"; then
-            sed -i 's/provider: hindsight$/provider: hindsight-custom/' "$HERMES_CONFIG"
-            echo "  [✓] Hermes — activated (hindsight -> hindsight-custom)"
+    echo "Current status:"
+    for agent in $AGENT_LIST; do
+        [ -z "${AGENT_INSTALLED[$agent]+x}" ] && continue
+        if [ "${AGENT_INSTALLED[$agent]}" -eq 1 ]; then
+            printf "  \033[32m[installed]\033[0m  %s\n" "${AGENT_LABEL[$agent]}"
         else
-            echo "  [~] Hermes — set memory.provider: hindsight-custom in config.yaml"
+            printf "  [ ]           %s\n" "${AGENT_LABEL[$agent]}"
         fi
-    else
-        echo "  [~] Hermes — set memory.provider: hindsight-custom in config.yaml"
-    fi
-else
-    echo "  [-] Hermes — skipped"
-fi
+    done
 
-# Claude Code
-if should_install claude-code; then
-    CLAUDE_DIR="$HOME/.claude"
-    CLAUDE_SETTINGS="$CLAUDE_DIR/settings.json"
-    mkdir -p "$CLAUDE_DIR/hooks"
-
-    if [ -f "$SRC/integrations/claude-code/hooks/recall.sh" ]; then
-        cp "$SRC/integrations/claude-code/hooks/recall.sh" "$CLAUDE_DIR/hooks/hindsight-recall.sh"
-        chmod +x "$CLAUDE_DIR/hooks/hindsight-recall.sh"
-    fi
-    if [ -f "$SRC/integrations/claude-code/hooks/retain.sh" ]; then
-        cp "$SRC/integrations/claude-code/hooks/retain.sh" "$CLAUDE_DIR/hooks/hindsight-retain.sh"
-        chmod +x "$CLAUDE_DIR/hooks/hindsight-retain.sh"
-    fi
-
-    if [ -f "$CLAUDE_SETTINGS" ] && command -v python3 &>/dev/null; then
-        backup "$CLAUDE_SETTINGS"
-        python3 -c "
-import json
-with open('$CLAUDE_SETTINGS') as f:
-    cfg = json.load(f)
-if 'mcpServers' not in cfg:
-    cfg['mcpServers'] = {}
-cfg['mcpServers']['hindsight'] = {
-    'command': 'python3',
-    'args': ['-m', 'mcp_server'],
-    'cwd': '$INSTALL_DIR',
-}
-with open('$CLAUDE_SETTINGS', 'w') as f:
-    json.dump(cfg, f, indent=2)
-" 2>/dev/null && echo "  [✓] Claude Code — MCP server + hooks configured" || \
-        echo "  [~] Claude Code — hooks installed, add MCP server to settings.json manually"
-    else
-        mkdir -p "$CLAUDE_DIR"
-        cat > "$CLAUDE_SETTINGS" <<CLAUDE_CFG
-{
-  "mcpServers": {
-    "hindsight": {
-      "command": "python3",
-      "args": ["-m", "mcp_server"],
-      "cwd": "$INSTALL_DIR"
-    }
-  }
-}
-CLAUDE_CFG
-        echo "  [✓] Claude Code — settings created"
-    fi
-else
-    echo "  [-] Claude Code — skipped"
-fi
-
-# OpenCode
-if should_install opencode; then
-    OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
-    if [ -f "$OPENCODE_CONFIG" ] && command -v python3 &>/dev/null; then
-        backup "$OPENCODE_CONFIG"
-        python3 -c "
-import json
-with open('$OPENCODE_CONFIG') as f:
-    cfg = json.load(f)
-if 'mcp' not in cfg:
-    cfg['mcp'] = {}
-cfg['mcp']['hindsight'] = {
-    'command': 'python3',
-    'args': ['-m', 'mcp_server'],
-    'cwd': '$INSTALL_DIR',
-}
-with open('$OPENCODE_CONFIG', 'w') as f:
-    json.dump(cfg, f, indent=2)
-" 2>/dev/null && echo "  [✓] OpenCode — MCP server added" || \
-        echo "  [~] OpenCode — add MCP server to opencode.json manually"
-    else
-        mkdir -p "$(dirname "$OPENCODE_CONFIG")"
-        cat > "$OPENCODE_CONFIG" <<OPENCODE_CFG
-{
-  "mcp": {
-    "hindsight": {
-      "command": "python3",
-      "args": ["-m", "mcp_server"],
-      "cwd": "$INSTALL_DIR"
-    }
-  }
-}
-OPENCODE_CFG
-        echo "  [✓] OpenCode — config created"
-    fi
-else
-    echo "  [-] OpenCode — skipped"
-fi
-
-# Codex CLI
-if should_install codex; then
-    CODEX_DIR="$HOME/.codex"
-    CODEX_HOOKS_DIR="$CODEX_DIR/hooks"
-    mkdir -p "$CODEX_HOOKS_DIR"
-
-    # Install hook scripts
-    if [ -f "$SRC/integrations/codex/hooks/recall.py" ]; then
-        cp "$SRC/integrations/codex/hooks/recall.py" "$CODEX_HOOKS_DIR/hindsight-recall.py"
-        chmod +x "$CODEX_HOOKS_DIR/hindsight-recall.py"
-    fi
-    if [ -f "$SRC/integrations/codex/hooks/retain.py" ]; then
-        cp "$SRC/integrations/codex/hooks/retain.py" "$CODEX_HOOKS_DIR/hindsight-retain.py"
-        chmod +x "$CODEX_HOOKS_DIR/hindsight-retain.py"
-    fi
-
-    # Wire hooks.json with correct absolute paths
-    CODEX_HOOKS_JSON="$CODEX_DIR/hooks.json"
-    backup "$CODEX_HOOKS_JSON"
-    python3 -c "
-import json, os
-
-hooks_dir = '$CODEX_HOOKS_DIR'
-new_hooks = {
-    'UserPromptSubmit': [{'command': 'python3', 'args': [os.path.join(hooks_dir, 'hindsight-recall.py')]}],
-    'Stop': [{'command': 'python3', 'args': [os.path.join(hooks_dir, 'hindsight-retain.py')]}],
-}
-
-# Merge with existing hooks.json if present
-existing = {}
-if os.path.exists('$CODEX_HOOKS_JSON'):
-    try:
-        with open('$CODEX_HOOKS_JSON') as f:
-            existing = json.load(f)
-    except Exception:
-        pass
-
-if 'hooks' not in existing:
-    existing['hooks'] = {}
-
-for event, hooks in new_hooks.items():
-    # Remove any old hindsight hooks first
-    old = existing['hooks'].get(event, [])
-    filtered = [h for h in old if 'hindsight' not in ' '.join(h.get('args', []))]
-    existing['hooks'][event] = filtered + hooks
-
-with open('$CODEX_HOOKS_JSON', 'w') as f:
-    json.dump(existing, f, indent=2)
-" 2>/dev/null && echo "  [✓] Codex CLI — hooks.json wired" || \
-        echo "  [~] Codex CLI — hooks installed, wire them in ~/.codex/hooks.json"
-
-    # Enable hooks in config.toml
-    CODEX_CONFIG="$CODEX_DIR/config.toml"
-    backup "$CODEX_CONFIG"
-    if [ -f "$CODEX_CONFIG" ]; then
-        if ! grep -q "codex_hooks" "$CODEX_CONFIG" 2>/dev/null; then
-            echo -e "\n[features]\ncodex_hooks = true" >> "$CODEX_CONFIG"
-        fi
-    else
-        mkdir -p "$CODEX_DIR"
-        cat > "$CODEX_CONFIG" <<CODEX_CFG
-[features]
-codex_hooks = true
-CODEX_CFG
-    fi
-
-    # Add MCP server config
-    if ! grep -q "hindsight" "$CODEX_CONFIG" 2>/dev/null; then
-        cat >> "$CODEX_CONFIG" <<CODEX_CFG
-
-[mcp_servers.hindsight]
-command = "python3"
-args = ["-m", "mcp_server"]
-cwd = "$INSTALL_DIR"
-CODEX_CFG
-    fi
-    echo "  [✓] Codex CLI — MCP server + hooks configured"
-else
-    echo "  [-] Codex CLI — skipped"
-fi
-
-# GitHub Copilot
-if should_install copilot; then
-    VSCODE_MCP="$HOME/.vscode/mcp.json"
-    backup "$VSCODE_MCP"
-    if [ -f "$VSCODE_MCP" ] && command -v python3 &>/dev/null; then
-        python3 -c "
-import json
-with open('$VSCODE_MCP') as f:
-    cfg = json.load(f)
-if 'servers' not in cfg:
-    cfg['servers'] = {}
-cfg['servers']['hindsight'] = {
-    'command': 'python3',
-    'args': ['-m', 'mcp_server'],
-    'cwd': '$INSTALL_DIR',
-}
-with open('$VSCODE_MCP', 'w') as f:
-    json.dump(cfg, f, indent=2)
-" 2>/dev/null && echo "  [✓] Copilot — MCP server added to VS Code" || \
-        echo "  [~] Copilot — add MCP server to ~/.vscode/mcp.json manually"
-    else
-        mkdir -p "$HOME/.vscode"
-        cat > "$VSCODE_MCP" <<VSCODE_CFG
-{
-  "servers": {
-    "hindsight": {
-      "command": "python3",
-      "args": ["-m", "mcp_server"],
-      "cwd": "$INSTALL_DIR"
-    }
-  }
-}
-VSCODE_CFG
-        echo "  [✓] Copilot — VS Code MCP config created"
-    fi
-
-    COPILOT_INSTRUCTIONS="$HOME/.github/copilot-instructions.md"
-    if [ -f "$SRC/integrations/copilot/copilot-instructions.md" ]; then
-        mkdir -p "$HOME/.github"
-        backup "$COPILOT_INSTRUCTIONS"
-        inject_section "$COPILOT_INSTRUCTIONS" "$SRC/integrations/copilot/copilot-instructions.md"
-        echo "  [✓] Copilot — instructions injected"
-    fi
-else
-    echo "  [-] Copilot — skipped"
-fi
-
-# --- Summary -----------------------------------------------------------------
-
-echo "[6/6] Verifying ..."
-
-if python3 -c "import sys; sys.path.insert(0, '$INSTALL_DIR'); from core.project import detect_project; print('      Core library: OK')" 2>/dev/null; then
-    true
-else
-    echo "      Core library: IMPORT FAILED (check hindsight-client is installed)"
-fi
-
-echo ""
-echo "=== Installed ==="
-echo ""
-echo "Config: $CONFIG_FILE"
-echo "Library: $INSTALL_DIR"
-echo ""
-if ! $HAS_KEY; then
-    echo "NEXT STEP: Set your API key:"
-    echo "  Edit $CONFIG_FILE and set 'apiKey'"
-    echo "  Or: export HINDSIGHT_API_KEY=your-key"
     echo ""
+    echo "What would you like to do?"
+    echo ""
+    echo "  [1] Install / Reconfigure"
+    echo "  [2] Update (core + MCP server only)"
+    echo "  [3] Uninstall"
+    echo ""
+    ask "Select [1]: " mode_choice "1"
+
+    case "$mode_choice" in
+        1) MODE="install" ;;
+        2) MODE="update" ;;
+        3) MODE="uninstall" ;;
+        *) echo "Invalid choice."; exit 1 ;;
+    esac
 fi
-echo "Restart your agents to activate."
-echo "Docs: https://github.com/$REPO"
+
+case "$MODE" in
+    install)   mode_install ;;
+    update)    mode_update ;;
+    uninstall) mode_uninstall ;;
+esac
