@@ -1,10 +1,11 @@
 /**
  * Hindsight API client for OpenCode plugin.
  *
- * Uses fetch() directly instead of a client library, keeping the plugin
- * zero-dependency (only @opencode-ai/plugin as peer).
- *
- * Same API surface as core/client.py — ensures conformity.
+ * Uses the same API paths as the Python hindsight_client SDK:
+ *   - Recall:  POST /v1/default/banks/{bank_id}/memories/recall
+ *   - Retain:  POST /v1/default/banks/{bank_id}/memories
+ *   - Reflect: POST /v1/default/banks/{bank_id}/reflect
+ *   - Bank:    GET  /v1/default/banks/{bank_id}
  */
 
 export interface HindsightConfig {
@@ -46,11 +47,10 @@ export class HindsightClient {
         tags?: string[];
         metadata?: Record<string, string>;
     }): Promise<void> {
-        const body: Record<string, unknown> = {
-            bank_id: bankId,
+        const body = {
             items: [{ content, context: options?.context, tags: options?.tags, metadata: options?.metadata }],
         };
-        await this.post("/v1/retain", body);
+        await this.post(`/v1/default/banks/${encodeURIComponent(bankId)}/memories`, body);
     }
 
     async recall(bankId: string, query: string, options?: {
@@ -58,29 +58,27 @@ export class HindsightClient {
         maxTokens?: number;
     }): Promise<RecallResponse> {
         const body = {
-            bank_id: bankId,
             query,
             budget: options?.budget || this.budget,
             max_tokens: options?.maxTokens || 4096,
         };
-        return this.post("/v1/recall", body) as Promise<RecallResponse>;
+        return this.post(`/v1/default/banks/${encodeURIComponent(bankId)}/memories/recall`, body) as Promise<RecallResponse>;
     }
 
     async reflect(bankId: string, query: string): Promise<ReflectResponse> {
         const body = {
-            bank_id: bankId,
             query,
             budget: this.budget,
         };
-        return this.post("/v1/reflect", body) as Promise<ReflectResponse>;
+        return this.post(`/v1/default/banks/${encodeURIComponent(bankId)}/reflect`, body) as Promise<ReflectResponse>;
     }
 
     async ensureBank(bankId: string): Promise<void> {
         try {
-            await this.get(`/v1/banks/${bankId}`);
+            await this.get(`/v1/default/banks/${encodeURIComponent(bankId)}`);
         } catch {
             try {
-                await this.post("/v1/banks", { bank_id: bankId, name: bankId });
+                await this.post("/v1/default/banks", { bank_id: bankId, name: bankId });
             } catch {
                 // Bank may already exist
             }

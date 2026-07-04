@@ -7,22 +7,18 @@
  *
  * Registers:
  *   - Tools: hindsight_retain, hindsight_recall, hindsight_reflect
- *   - Hooks: auto-retain on session.idle, memory injection on session.created
+ *   - Hooks: auto-retain on session.idle, memory injection on system.transform
  *
- * @example
- * ```json
- * // opencode.json (project-level)
- * { "plugin": ["file:./path/to/hindsight-custom/integrations/opencode"] }
- *
- * // opencode.json (global ~)
- * { "plugin": ["file:~/.config/hindsight-custom/opencode-plugin"] }
- * ```
+ * Config is read from ~/.config/hindsight-custom/config.json, with env var overrides.
  */
 
 import type { Plugin } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin/tool";
 import { HindsightClient } from "./client.js";
 import { detectProject, SHARED_BANK } from "./project.js";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -36,11 +32,28 @@ interface PluginConfig {
 }
 
 function loadConfig(): PluginConfig {
+    // Read from ~/.config/hindsight-custom/config.json (same file MCP server uses)
+    let fileApiUrl: string | undefined;
+    let fileApiKey: string | undefined;
+    let fileBudget: string | undefined;
+    let fileSearchShared: boolean | undefined;
+
+    try {
+        const configPath = join(homedir(), ".config", "hindsight-custom", "config.json");
+        const raw = JSON.parse(readFileSync(configPath, "utf-8"));
+        fileApiUrl = raw.api_url;
+        fileApiKey = raw.apiKey;
+        fileBudget = raw.budget;
+        fileSearchShared = raw.search_shared;
+    } catch {
+        // Config file not found — fall through to defaults
+    }
+
     return {
-        apiUrl: process.env.HINDSIGHT_API_URL || "https://api.hindsight.vectorize.io",
-        apiKey: process.env.HINDSIGHT_API_KEY || "",
-        budget: process.env.HINDSIGHT_BUDGET || "mid",
-        searchShared: process.env.HINDSIGHT_SEARCH_SHARED !== "false",
+        apiUrl: process.env.HINDSIGHT_API_URL || fileApiUrl || "https://api.hindsight.vectorize.io",
+        apiKey: process.env.HINDSIGHT_API_KEY || fileApiKey || "",
+        budget: process.env.HINDSIGHT_BUDGET || fileBudget || "mid",
+        searchShared: process.env.HINDSIGHT_SEARCH_SHARED !== "false" && (fileSearchShared !== false),
         retainContext: process.env.HINDSIGHT_RETAIN_CONTEXT || "opencode session",
         recallMaxTokens: parseInt(process.env.HINDSIGHT_RECALL_MAX_TOKENS || "4096", 10),
     };
@@ -55,6 +68,8 @@ const HindsightPlugin: Plugin = async (input, _options) => {
     // Detect project from working directory
     const projectBank = detectProject(input.directory);
     await client.ensureBank(projectBank);
+
+    console.error(`[hindsight] plugin initialized: api=${config.apiUrl} bank=${projectBank} searchShared=${config.searchShared}`);
 
     // ── Tools ───────────────────────────────────────────────────────────────
 

@@ -138,10 +138,18 @@ detect_agents() {
         fi
     fi
 
-    # OpenCode — check opencode.json for hindsight MCP
-    if command -v opencode &>/dev/null || [ -f "$HOME/.config/opencode/opencode.json" ]; then
-        if [ -f "$HOME/.config/opencode/opencode.json" ] && command -v python3 &>/dev/null && \
-           python3 -c "import json; d=json.load(open('$HOME/.config/opencode/opencode.json')); assert 'hindsight' in d.get('mcp',{})" 2>/dev/null; then
+    # OpenCode — check opencode.jsonc or opencode.json for hindsight plugin or MCP
+    local oc_cfg="$HOME/.config/opencode/opencode.jsonc"
+    [ -f "$oc_cfg" ] || oc_cfg="$HOME/.config/opencode/opencode.json"
+    if command -v opencode &>/dev/null || [ -f "$oc_cfg" ]; then
+        if [ -f "$oc_cfg" ] && command -v python3 &>/dev/null && \
+           python3 -c "
+import json
+d=json.load(open('$oc_cfg'))
+has_plugin = any('hindsight' in str(p) for p in d.get('plugin', []))
+has_mcp = 'hindsight' in d.get('mcp', {})
+assert has_plugin or has_mcp
+" 2>/dev/null; then
             AGENT_INSTALLED[opencode]=1
         else
             AGENT_INSTALLED[opencode]=0
@@ -598,11 +606,36 @@ install_core() {
     cp "$SRC/mcp_server/server.py" "$INSTALL_DIR/mcp_server/"
     echo "      $INSTALL_DIR"
 
-    # Python deps
-    if command -v pip3 &>/dev/null; then
-        pip3 install --user --quiet hindsight-client mcp 2>/dev/null || true
-    elif command -v uv &>/dev/null; then
-        uv pip install --quiet hindsight-client mcp 2>/dev/null || true
+    # Python deps — install into a self-contained venv
+    setup_mcp_venv
+}
+
+# Set up a venv with mcp + hindsight-client so the MCP server works
+# regardless of system Python restrictions (PEP 668).
+# Sets MCP_PYTHON for agent installers to use.
+MCP_PYTHON="python3"
+setup_mcp_venv() {
+    local venv="$INSTALL_DIR/.venv"
+    if [ -d "$venv/bin" ] && "$venv/bin/python3" -c "import mcp, hindsight_client" 2>/dev/null; then
+        MCP_PYTHON="$venv/bin/python3"
+        echo "      MCP venv: $venv (already set up)"
+        return 0
+    fi
+
+    echo "[*] Setting up MCP server venv ..."
+    if ! python3 -m venv "$venv" 2>/dev/null; then
+        echo "  [!] Could not create venv (python3-venv not installed)."
+        echo "      Falling back to system python3 — MCP server may not work."
+        echo "      Fix: sudo apt install python3.12-venv (or your distro's equivalent)"
+        return 1
+    fi
+
+    if "$venv/bin/pip" install --quiet hindsight-client mcp 2>/dev/null; then
+        MCP_PYTHON="$venv/bin/python3"
+        echo "      MCP venv: $venv"
+    else
+        echo "  [!] pip install failed in venv. MCP server may not work."
+        return 1
     fi
 }
 
@@ -651,28 +684,29 @@ install_claude() {
         python3 -c "
 import json
 with open('$settings') as f: cfg=json.load(f)
-cfg.setdefault('mcpServers',{})['hindsight']={'command':'python3','args':['-m','mcp_server'],'cwd':'$INSTALL_DIR'}
+cfg.setdefault('mcpServers',{})['hindsight']={'command':'$MCP_PYTHON','args':['-m','mcp_server'],'cwd':'$INSTALL_DIR'}
 with open('$settings','w') as f: json.dump(cfg,f,indent=2); f.write('\n')
 " 2>/dev/null
     else
         mkdir -p "$dir"
-        echo "{\"mcpServers\":{\"hindsight\":{\"command\":\"python3\",\"args\":[\"-m\",\"mcp_server\"],\"cwd\":\"$INSTALL_DIR\"}}}" > "$settings"
+        echo "{\"mcpServers\":{\"hindsight\":{\"command\":\"$MCP_PYTHON\",\"args\":[\"-m\",\"mcp_server\"],\"cwd\":\"$INSTALL_DIR\"}}}" > "$settings"
     fi
     echo "  [✓] Claude Code (plugin + hooks + MCP)"
 }
 
 install_opencode() {
-    local cfg="$HOME/.config/opencode/opencode.json"
+    # Prefer opencode.jsonc (OpenCode reads it over .json)
+    local cfg="$HOME/.config/opencode/opencode.jsonc"
+    [ -f "$cfg" ] || cfg="$HOME/.config/opencode/opencode.json"
     backup "$cfg"
 
-    # Install native plugin
+    # Build native plugin (provides hooks for auto-inject/auto-retain)
     local plugin_dir="$CONFIG_DIR/opencode-plugin"
     mkdir -p "$plugin_dir/src"
     cp "$SRC/integrations/opencode/package.json" "$plugin_dir/"
     cp "$SRC/integrations/opencode/tsconfig.json" "$plugin_dir/"
     cp "$SRC/integrations/opencode/src/"*.ts "$plugin_dir/src/" 2>/dev/null || true
 
-    # Build plugin if npm is available
     local plugin_built=false
     if command -v npm &>/dev/null; then
         (cd "$plugin_dir" && npm install --silent 2>/dev/null && npm run build --silent 2>/dev/null) && plugin_built=true
@@ -680,36 +714,36 @@ install_opencode() {
         (cd "$plugin_dir" && pnpm install --silent 2>/dev/null && pnpm run build --silent 2>/dev/null) && plugin_built=true
     fi
 
-    local plugin_built_py="False"
-    $plugin_built && plugin_built_py="True"
-
-    # Configure opencode.json
     if [ -f "$cfg" ] && command -v python3 &>/dev/null; then
         python3 -c "
 import json
 with open('$cfg') as f: d=json.load(f)
-# Add native plugin if built, otherwise MCP server
-if $plugin_built_py:
+if $([ "$plugin_built" = true ] && echo True || echo False):
+    # Native plugin: provides tools + hooks (auto-inject, auto-retain)
     plugins = d.get('plugin', [])
     plugin_ref = 'file:$plugin_dir'
     if plugin_ref not in plugins:
         plugins.append(plugin_ref)
     d['plugin'] = plugins
+    d.get('mcp',{}).pop('hindsight', None)
 else:
-    d.setdefault('mcp',{})['hindsight']={'command':'python3','args':['-m','mcp_server'],'cwd':'$INSTALL_DIR'}
+    # Fallback: MCP server (tools only, no hooks)
+    d.pop('plugin', None)
+    d.setdefault('mcp',{})['hindsight']={'type':'local','command':'$MCP_PYTHON'.split()+['-m','mcp_server'],'cwd':'$INSTALL_DIR'}
 with open('$cfg','w') as f: json.dump(d,f,indent=2); f.write('\n')
 "
     else
+        cfg="$HOME/.config/opencode/opencode.json"
         mkdir -p "$(dirname "$cfg")"
         if $plugin_built; then
             echo "{\"plugin\":[\"file:$plugin_dir\"]}" > "$cfg"
         else
-            echo "{\"mcp\":{\"hindsight\":{\"command\":\"python3\",\"args\":[\"-m\",\"mcp_server\"],\"cwd\":\"$INSTALL_DIR\"}}}" > "$cfg"
+            echo "{\"mcp\":{\"hindsight\":{\"type\":\"local\",\"command\":[\"$MCP_PYTHON\",\"-m\",\"mcp_server\"],\"cwd\":\"$INSTALL_DIR\"}}}" > "$cfg"
         fi
     fi
 
     if $plugin_built; then
-        echo "  [✓] OpenCode (native plugin)"
+        echo "  [✓] OpenCode (native plugin with hooks)"
     else
         echo "  [✓] OpenCode (MCP server — npm not available for native plugin)"
     fi
@@ -749,7 +783,7 @@ with open('$hooks_json','w') as f: json.dump(d,f,indent=2)
         grep -q "hindsight" "$toml" 2>/dev/null || cat >> "$toml" <<EOF
 
 [mcp_servers.hindsight]
-command = "python3"
+command = "$MCP_PYTHON"
 args = ["-m", "mcp_server"]
 cwd = "$INSTALL_DIR"
 EOF
@@ -759,7 +793,7 @@ EOF
 codex_hooks = true
 
 [mcp_servers.hindsight]
-command = "python3"
+command = "$MCP_PYTHON"
 args = ["-m", "mcp_server"]
 cwd = "$INSTALL_DIR"
 EOF
@@ -774,12 +808,12 @@ install_copilot() {
         python3 -c "
 import json
 with open('$mcp') as f: d=json.load(f)
-d.setdefault('servers',{})['hindsight']={'command':'python3','args':['-m','mcp_server'],'cwd':'$INSTALL_DIR'}
+d.setdefault('servers',{})['hindsight']={'command':'$MCP_PYTHON','args':['-m','mcp_server'],'cwd':'$INSTALL_DIR'}
 with open('$mcp','w') as f: json.dump(d,f,indent=2); f.write('\n')
 " 2>/dev/null
     else
         mkdir -p "$HOME/.vscode"
-        echo "{\"servers\":{\"hindsight\":{\"command\":\"python3\",\"args\":[\"-m\",\"mcp_server\"],\"cwd\":\"$INSTALL_DIR\"}}}" > "$mcp"
+        echo "{\"servers\":{\"hindsight\":{\"command\":\"$MCP_PYTHON\",\"args\":[\"-m\",\"mcp_server\"],\"cwd\":\"$INSTALL_DIR\"}}}" > "$mcp"
     fi
 
     # Plugin manifest + hooks
@@ -824,12 +858,18 @@ with open(p,'w') as f: json.dump(d,f,indent=2); f.write('\n')
 }
 
 uninstall_opencode() {
-    if [ -f "$HOME/.config/opencode/opencode.json" ] && command -v python3 &>/dev/null; then
-        backup "$HOME/.config/opencode/opencode.json"
+    local cfg="$HOME/.config/opencode/opencode.jsonc"
+    [ -f "$cfg" ] || cfg="$HOME/.config/opencode/opencode.json"
+    if [ -f "$cfg" ] && command -v python3 &>/dev/null; then
+        backup "$cfg"
         python3 -c "
 import json
-p='$HOME/.config/opencode/opencode.json'
+p='$cfg'
 with open(p) as f: d=json.load(f)
+# Remove hindsight plugin
+d['plugin'] = [p for p in d.get('plugin', []) if 'hindsight' not in str(p)]
+if not d.get('plugin'): d.pop('plugin', None)
+# Remove hindsight MCP
 d.get('mcp',{}).pop('hindsight',None)
 if 'mcp' in d and not d['mcp']: del d['mcp']
 with open(p,'w') as f: json.dump(d,f,indent=2); f.write('\n')
