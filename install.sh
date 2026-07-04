@@ -224,57 +224,73 @@ prompt_user() {
         return
     fi
 
-    echo "Detected agents:"
-    echo ""
-    local i=1
+    # Build agent list — detected agents are pre-selected
     local -a AGENT_KEYS=()
+    local -a AGENT_LABELS=()
+    local -a AGENT_STATE=()  # 1=selected, 0=not selected
     for agent in $AGENT_LIST; do
         if [ -n "${AGENT_FOUND[$agent]+x}" ]; then
-            echo "  [$i] ${AGENT_FOUND[$agent]} ($agent)"
             AGENT_KEYS+=("$agent")
-            i=$((i + 1))
+            AGENT_LABELS+=("${AGENT_FOUND[$agent]}")
+            AGENT_STATE+=(1)  # pre-select detected agents
         fi
     done
-    echo ""
-    echo "  [A] All detected agents"
-    echo "  [M] Manual selection (type agent names)"
-    echo ""
+    local count=${#AGENT_KEYS[@]}
 
-    ask "Select agents to install [A]: " choice "A"
-    choice="${choice:-A}"
-
-    if [ "$choice" = "A" ] || [ "$choice" = "a" ]; then
-        INSTALL_AGENTS=$(IFS=,; echo "${AGENT_KEYS[*]}")
-    elif [ "$choice" = "M" ] || [ "$choice" = "m" ]; then
-        echo ""
-        echo "Available: $AGENT_LIST"
-        ask "Enter agents (comma-separated): " INSTALL_AGENTS ""
-    elif [[ "$choice" =~ ^[0-9]+$ ]]; then
-        # Single number selection
-        local idx=$((choice - 1))
-        if [ "$idx" -ge 0 ] && [ "$idx" -lt ${#AGENT_KEYS[@]} ]; then
-            INSTALL_AGENTS="${AGENT_KEYS[$idx]}"
-        else
-            echo "Invalid selection."
-            exit 1
+    # Interactive checkbox loop
+    local input=""
+    while true; do
+        # Clear previous output (move cursor up and clear lines)
+        if [ -n "$input" ]; then
+            printf "\033[%dA" $((count + 3))
+            for _ in $(seq 1 $((count + 3))); do
+                printf "\033[2K\n"
+            done
+            printf "\033[%dA" $((count + 3))
         fi
-    elif [[ "$choice" =~ ^[0-9,]+$ ]]; then
-        # Multiple numbers like "1,3"
-        local selected=""
-        IFS=',' read -ra NUMS <<< "$choice"
-        for num in "${NUMS[@]}"; do
-            local idx=$((num - 1))
-            if [ "$idx" -ge 0 ] && [ "$idx" -lt ${#AGENT_KEYS[@]} ]; then
-                [ -n "$selected" ] && selected="$selected,"
-                selected="$selected${AGENT_KEYS[$idx]}"
+
+        echo "Select agents to install:"
+        echo ""
+        for i in $(seq 0 $((count - 1))); do
+            local num=$((i + 1))
+            if [ "${AGENT_STATE[$i]}" -eq 1 ]; then
+                printf "  \033[32m[x]\033[0m %d. %s (%s)\n" "$num" "${AGENT_LABELS[$i]}" "${AGENT_KEYS[$i]}"
+            else
+                printf "  [ ] %d. %s (%s)\n" "$num" "${AGENT_LABELS[$i]}" "${AGENT_KEYS[$i]}"
             fi
         done
-        INSTALL_AGENTS="$selected"
-    else
-        INSTALL_AGENTS="$choice"
-    fi
+        echo ""
+        printf "  Type number to toggle, Enter to confirm: "
+
+        read -r input < /dev/tty 2>/dev/null || read -r input
+
+        # Enter = confirm
+        if [ -z "$input" ]; then
+            break
+        fi
+
+        # Toggle by number
+        if [[ "$input" =~ ^[0-9]+$ ]] && [ "$input" -ge 1 ] && [ "$input" -le "$count" ]; then
+            local idx=$((input - 1))
+            if [ "${AGENT_STATE[$idx]}" -eq 1 ]; then
+                AGENT_STATE[$idx]=0
+            else
+                AGENT_STATE[$idx]=1
+            fi
+        fi
+    done
+
+    # Collect selected agents
+    INSTALL_AGENTS=""
+    for i in $(seq 0 $((count - 1))); do
+        if [ "${AGENT_STATE[$i]}" -eq 1 ]; then
+            [ -n "$INSTALL_AGENTS" ] && INSTALL_AGENTS="$INSTALL_AGENTS,"
+            INSTALL_AGENTS="$INSTALL_AGENTS${AGENT_KEYS[$i]}"
+        fi
+    done
 
     if [ -z "$INSTALL_AGENTS" ]; then
+        echo ""
         echo "No agents selected. Exiting."
         exit 0
     fi
