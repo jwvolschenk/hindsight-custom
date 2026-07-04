@@ -59,6 +59,95 @@ backup() {
     fi
 }
 
+# Inject or replace a marked section in a file.
+# Usage: inject_section <file> <marker_id> <content_file>
+# If the file already contains <!-- HINDSIGHT-CUSTOM:START --> ... END markers,
+# replaces the content between them. Otherwise appends the marked content.
+MARKER_START="<!-- HINDSIGHT-CUSTOM:START -->"
+MARKER_END="<!-- HINDSIGHT-CUSTOM:END -->"
+
+inject_section() {
+    local target="$1"
+    local content_file="$2"
+
+    if [ ! -f "$target" ]; then
+        # File doesn't exist — create it with the marked content
+        cp "$content_file" "$target"
+        return
+    fi
+
+    if grep -q "HINDSIGHT-CUSTOM:START" "$target" 2>/dev/null; then
+        # Markers exist — replace content between them
+        local tmp="${target}.tmp"
+        python3 -c "
+import sys
+marker_start = '$MARKER_START'
+marker_end = '$MARKER_END'
+with open('$target') as f:
+    lines = f.readlines()
+with open('$content_file') as f:
+    new_content = f.read()
+
+result = []
+inside = False
+replaced = False
+for line in lines:
+    if marker_start in line:
+        inside = True
+        result.append(new_content + '\n')
+        replaced = True
+        continue
+    if marker_end in line:
+        inside = False
+        continue
+    if not inside:
+        result.append(line)
+
+with open('$target', 'w') as f:
+    f.writelines(result)
+" 2>/dev/null
+    else
+        # No markers — append marked content
+        echo "" >> "$target"
+        cat "$content_file" >> "$target"
+    fi
+}
+
+# Strip a marked section from a file.
+# Usage: strip_section <file>
+strip_section() {
+    local target="$1"
+    if [ ! -f "$target" ]; then return; fi
+    if ! grep -q "HINDSIGHT-CUSTOM:START" "$target" 2>/dev/null; then return; fi
+
+    python3 -c "
+marker_start = 'HINDSIGHT-CUSTOM:START'
+marker_end = 'HINDSIGHT-CUSTOM:END'
+with open('$target') as f:
+    lines = f.readlines()
+
+result = []
+inside = False
+for line in lines:
+    if marker_start in line:
+        inside = True
+        continue
+    if marker_end in line:
+        inside = False
+        continue
+    if not inside:
+        result.append(line)
+
+# Strip trailing blank lines left behind
+while result and result[-1].strip() == '':
+    result.pop()
+
+with open('$target', 'w') as f:
+    f.writelines(result)
+    f.write('\n')
+" 2>/dev/null
+}
+
 cleanup() { rm -rf "$TEMP_DIR"; }
 trap cleanup EXIT
 
@@ -259,24 +348,132 @@ fi
 if $UNINSTALL; then
     echo "[*] Uninstalling ..."
 
+    # Hermes
     rm -rf "$HOME/.hermes/plugins/hindsight-custom" 2>/dev/null || true
     rm -rf "$HOME/.hermes/hindsight-custom" 2>/dev/null || true
     if [ -f "$HOME/.hermes/config.yaml" ]; then
+        backup "$HOME/.hermes/config.yaml"
         sed -i 's/provider: hindsight-custom/provider: hindsight/' "$HOME/.hermes/config.yaml" 2>/dev/null || true
     fi
     echo "  [x] Hermes plugin removed"
 
+    # Claude Code
     rm -f "$HOME/.claude/hooks/hindsight-recall.sh" 2>/dev/null || true
     rm -f "$HOME/.claude/hooks/hindsight-retain.sh" 2>/dev/null || true
-    echo "  [x] Claude Code hooks removed"
+    if [ -f "$HOME/.claude/settings.json" ] && command -v python3 &>/dev/null; then
+        backup "$HOME/.claude/settings.json"
+        python3 -c "
+import json
+path = '$HOME/.claude/settings.json'
+with open(path) as f:
+    cfg = json.load(f)
+if 'mcpServers' in cfg and 'hindsight' in cfg['mcpServers']:
+    del cfg['mcpServers']['hindsight']
+    if not cfg['mcpServers']:
+        del cfg['mcpServers']
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+    f.write('\n')
+" 2>/dev/null || true
+    fi
+    echo "  [x] Claude Code hooks + MCP removed"
 
-    rm -rf "$CONFIG_DIR" 2>/dev/null || true
-    echo "  [x] Config removed"
+    # Codex CLI
+    if [ -f "$HOME/.codex/hooks.json" ] && command -v python3 &>/dev/null; then
+        backup "$HOME/.codex/hooks.json"
+        python3 -c "
+import json, os
+path = '$HOME/.codex/hooks.json'
+with open(path) as f:
+    cfg = json.load(f)
+if 'hooks' in cfg:
+    for event in list(cfg['hooks'].keys()):
+        cfg['hooks'][event] = [h for h in cfg['hooks'][event] if 'hindsight' not in ' '.join(h.get('args', []))]
+        if not cfg['hooks'][event]:
+            del cfg['hooks'][event]
+if not cfg.get('hooks'):
+    os.remove(path)
+else:
+    with open(path, 'w') as f:
+        json.dump(cfg, f, indent=2)
+" 2>/dev/null || true
+    fi
+    rm -f "$HOME/.codex/hooks/hindsight-recall.py" "$HOME/.codex/hooks/hindsight-retain.py" 2>/dev/null || true
+    if [ -f "$HOME/.codex/config.toml" ] && command -v python3 &>/dev/null; then
+        backup "$HOME/.codex/config.toml"
+        python3 -c "
+import re
+path = '$HOME/.codex/config.toml'
+with open(path) as f:
+    content = f.read()
+content = re.sub(r'\n?\[features\]\ncodex_hooks\s*=\s*true\n?', '\n', content)
+content = re.sub(r'\n?\[mcp_servers\.hindsight\]\n.*?cwd\s*=.*?\n', '\n', content, flags=re.DOTALL)
+content = re.sub(r'\n{3,}', '\n\n', content)
+with open(path, 'w') as f:
+    f.write(content)
+" 2>/dev/null || true
+    fi
+    echo "  [x] Codex CLI hooks + MCP removed"
+
+    # OpenCode
+    if [ -f "$HOME/.config/opencode/opencode.json" ] && command -v python3 &>/dev/null; then
+        backup "$HOME/.config/opencode/opencode.json"
+        python3 -c "
+import json
+path = '$HOME/.config/opencode/opencode.json'
+with open(path) as f:
+    cfg = json.load(f)
+if 'mcp' in cfg and 'hindsight' in cfg['mcp']:
+    del cfg['mcp']['hindsight']
+    if not cfg['mcp']:
+        del cfg['mcp']
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+    f.write('\n')
+" 2>/dev/null || true
+    fi
+    echo "  [x] OpenCode MCP removed"
+
+    # VS Code / Copilot
+    if [ -f "$HOME/.vscode/mcp.json" ] && command -v python3 &>/dev/null; then
+        backup "$HOME/.vscode/mcp.json"
+        python3 -c "
+import json
+path = '$HOME/.vscode/mcp.json'
+with open(path) as f:
+    cfg = json.load(f)
+if 'servers' in cfg and 'hindsight' in cfg['servers']:
+    del cfg['servers']['hindsight']
+    if not cfg['servers']:
+        del cfg['servers']
+if cfg:
+    with open(path, 'w') as f:
+        json.dump(cfg, f, indent=2)
+        f.write('\n')
+else:
+    import os
+    os.remove(path)
+" 2>/dev/null || true
+    fi
+    strip_section "$HOME/.github/copilot-instructions.md"
+    echo "  [x] Copilot MCP + instructions removed"
+
+    # Config (keep backups)
+    if [ -d "$CONFIG_DIR" ]; then
+        rm -rf "$CONFIG_DIR/lib" 2>/dev/null || true
+        rm -f "$CONFIG_DIR/config.json" 2>/dev/null || true
+        # Keep backups directory
+        if [ -d "$CONFIG_DIR/backups" ]; then
+            echo "  [~] Config removed (backups kept at $CONFIG_DIR/backups/)"
+        else
+            rm -rf "$CONFIG_DIR" 2>/dev/null || true
+            echo "  [x] Config removed"
+        fi
+    fi
 
     echo ""
     echo "=== Uninstalled ==="
-    echo "MCP server configs in agent configs were NOT modified."
-    echo "Remove the 'hindsight' entry from your agent configs manually."
+    echo "Restart your agents to complete removal."
     exit 0
 fi
 
@@ -658,13 +855,8 @@ VSCODE_CFG
     if [ -f "$SRC/integrations/copilot/copilot-instructions.md" ]; then
         mkdir -p "$HOME/.github"
         backup "$COPILOT_INSTRUCTIONS"
-        if [ -f "$COPILOT_INSTRUCTIONS" ] && grep -q "Hindsight" "$COPILOT_INSTRUCTIONS" 2>/dev/null; then
-            echo "  [✓] Copilot — instructions already present"
-        else
-            echo "" >> "$COPILOT_INSTRUCTIONS"
-            cat "$SRC/integrations/copilot/copilot-instructions.md" >> "$COPILOT_INSTRUCTIONS"
-            echo "  [✓] Copilot — instructions appended"
-        fi
+        inject_section "$COPILOT_INSTRUCTIONS" "$SRC/integrations/copilot/copilot-instructions.md"
+        echo "  [✓] Copilot — instructions injected"
     fi
 else
     echo "  [-] Copilot — skipped"

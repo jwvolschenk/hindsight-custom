@@ -1,3 +1,4 @@
+<!-- HINDSIGHT-CUSTOM:START -->
 ## Memory
 
 You have access to persistent long-term memory via Hindsight tools:
@@ -25,3 +26,4 @@ You have access to persistent long-term memory via Hindsight tools:
 Memories are automatically routed to project-specific banks based on the
 current git repository. The `system` bank holds cross-project knowledge.
 Both are searched on every recall by default.
+<!-- HINDSIGHT-CUSTOM:END -->
