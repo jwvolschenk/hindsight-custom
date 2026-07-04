@@ -968,7 +968,7 @@ mode_uninstall() {
         echo "Select agents to uninstall:"
         echo ""
 
-        if ! checkbox_select "installed" "all-installed"; then
+        if ! checkbox_select "installed" "none"; then
             echo "Nothing to uninstall."
             return
         fi

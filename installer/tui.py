@@ -380,13 +380,15 @@ class HindsightInstallerApp(App[None]):
                 with Vertical(id="uninstall-view", classes="mode-view hidden"):
                     yield Button("Back", id="back-uninstall", variant="default")
                     yield Static("Uninstall", classes="mode-title")
-                    yield Static("Only installed agents are selected by default.", classes="mode-note")
+                    yield Static("Tick only the installed agents you want to remove.", classes="mode-note")
                     yield Static("Installed integrations", classes="section")
                     with Vertical(classes="agent-list"):
                         for state in self.states:
+                            if not state.installed:
+                                continue
                             yield Checkbox(
                                 self._agent_label(state),
-                                value=state.installed,
+                                value=False,
                                 id=f"uninstall-agent-{state.key}",
                                 classes="agent uninstall-agent",
                             )
@@ -539,6 +541,7 @@ class HindsightInstallerApp(App[None]):
             lines.append("Updates shared core files and installed hooks.")
         elif self._mode == "uninstall":
             lines.append("Tick installed agents to remove.")
+            lines.append("Nothing is selected by default.")
         lines.append("")
         lines.append(f"Installed: [bold green]{len(installed)}[/]")
         lines.append(f"Detected only: [yellow]{len(detected)}[/]")
@@ -561,7 +564,7 @@ class HindsightInstallerApp(App[None]):
                     checkbox = self.query_one(f"#{prefix}-agent-{state.key}", Checkbox)
                 except NoMatches:
                     continue
-                checkbox.value = state.installed
+                checkbox.value = state.installed if prefix == "install" else False
                 checkbox.label = self._agent_label(state)
 
     def _agent_label(self, state: AgentState) -> str:
