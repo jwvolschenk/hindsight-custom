@@ -350,38 +350,65 @@ all_detected_agents() {
     INSTALL_AGENTS="$out"
 }
 
+run_limited() {
+    local seconds="$1"
+    shift
+    if command -v timeout &>/dev/null; then
+        timeout "$seconds" "$@"
+    else
+        "$@"
+    fi
+}
+
 maybe_launch_tui() {
-    $FORCE_LEGACY && return
-    [ -n "$MODE" ] && return
-    [ "${HINDSIGHT_INSTALLER_NO_TUI:-}" = "1" ] && return
-    [ -t 1 ] || return
-    command -v python3 &>/dev/null || return
+    $FORCE_LEGACY && return 0
+    [ -n "$MODE" ] && return 0
+    [ "${HINDSIGHT_INSTALLER_NO_TUI:-}" = "1" ] && return 0
+    [ -t 1 ] || return 0
+    command -v python3 &>/dev/null || return 0
 
     local tui="$SRC/installer/tui.py"
     if [ ! -f "$tui" ]; then
-        return
+        return 0
     fi
-    [ -r /dev/tty ] && exec </dev/tty
+    if { : < /dev/tty; } 2>/dev/null; then
+        exec </dev/tty
+    else
+        echo "      No interactive TTY available; using legacy installer."
+        return 0
+    fi
 
     if python3 -c "import textual" >/dev/null 2>&1; then
+        echo "[*] Starting Hindsight Control TUI ..."
         HINDSIGHT_INSTALLER_SCRIPT="$SRC/install.sh" python3 "$tui"
         exit $?
     fi
 
     if command -v uv &>/dev/null; then
         local venv="$TEMP_DIR/tui-venv"
-        if uv venv "$venv" --quiet >/dev/null 2>&1 && \
-           uv pip install --python "$venv/bin/python" textual --quiet >/dev/null 2>&1; then
+        echo "[*] Preparing temporary TUI environment with uv ..."
+        if run_limited 120 uv venv "$venv" --quiet && \
+           run_limited 120 uv pip install --python "$venv/bin/python" textual --quiet; then
+            echo "[*] Starting Hindsight Control TUI ..."
             HINDSIGHT_INSTALLER_SCRIPT="$SRC/install.sh" "$venv/bin/python" "$tui"
             exit $?
         fi
+        echo "      TUI dependency setup with uv failed or timed out; using legacy installer."
     fi
 
-    if python3 -m venv "$TEMP_DIR/tui-venv" >/dev/null 2>&1; then
-        "$TEMP_DIR/tui-venv/bin/python" -m pip install --quiet textual >/dev/null 2>&1 || return
+    if run_limited 60 python3 -m venv "$TEMP_DIR/tui-venv" >/dev/null 2>&1; then
+        echo "[*] Preparing temporary TUI environment with pip ..."
+        if ! run_limited 120 "$TEMP_DIR/tui-venv/bin/python" -m pip install --quiet textual; then
+            echo "      TUI dependency setup with pip failed or timed out; using legacy installer."
+            return 0
+        fi
+        echo "[*] Starting Hindsight Control TUI ..."
         HINDSIGHT_INSTALLER_SCRIPT="$SRC/install.sh" "$TEMP_DIR/tui-venv/bin/python" "$tui"
         exit $?
     fi
+
+    echo "      Textual is not available and Python venv could not be created; using legacy installer."
+    return 0
 }
 
 # ── source fetching ─────────────────────────────────────────────────────────
@@ -442,6 +469,7 @@ fetch_source() {
         echo "ERROR: Could not fetch source."
         exit 1
     fi
+    echo "      Source ready."
 }
 
 # ── config setup ────────────────────────────────────────────────────────────
