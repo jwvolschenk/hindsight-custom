@@ -206,9 +206,11 @@ Build a standalone TUI binary:
 Publish a release binary by pushing a `v*` tag, for example:
 
 ```bash
-git tag v2.0.1
-git push origin v2.0.1
+./build.sh
 ```
+
+The script suggests the next semantic version from existing tags, pushes the
+selected tag, and watches the GitHub Actions release build.
 
 ## Configuration
 
