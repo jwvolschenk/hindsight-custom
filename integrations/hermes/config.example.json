@@ -1,0 +1,12 @@
+{
+  "api_url": "https://api.hindsight.vectorize.io",
+  "apiKey": "",
+  "timeout": 300,
+  "budget": "mid",
+  "search_shared": true,
+  "auto_retain": true,
+  "retain_every_n_turns": 3,
+  "retain_async": true,
+  "recall_types": ["observation"],
+  "recall_max_input_chars": 400
+}

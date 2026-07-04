@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "command": "python3",
+        "args": ["__HOOKS_DIR__/recall.py"]
+      }
+    ],
+    "Stop": [
+      {
+        "command": "python3",
+        "args": ["__HOOKS_DIR__/retain.py"]
+      }
+    ]
+  }
+}

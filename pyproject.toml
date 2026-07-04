@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hindsight-custom"
+version = "2.0.0"
+description = "Agent-agnostic project-aware memory routing for Hindsight"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = [
+    "hindsight-client>=0.6.0",
+    "mcp>=1.0.0",
+]
+
+[project.scripts]
+hindsight-mcp = "mcp_server.server:main"
+
+[tool.setuptools.packages.find]
+include = ["core*", "mcp_server*"]

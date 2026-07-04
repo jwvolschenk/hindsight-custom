@@ -1,0 +1,13 @@
+{
+  "servers": {
+    "hindsight": {
+      "command": "python3",
+      "args": ["-m", "mcp_server"],
+      "cwd": "__REPO_ROOT__",
+      "env": {
+        "HINDSIGHT_API_KEY": "",
+        "HINDSIGHT_API_URL": "https://api.hindsight.vectorize.io"
+      }
+    }
+  }
+}
