@@ -405,7 +405,9 @@ install_hermes() {
     local dir="$HOME/.hermes/plugins/hindsight-custom"
     mkdir -p "$dir"
     cp "$SRC/integrations/hermes/__init__.py" "$dir/"
-    [ ! -d "$dir/core" ] && ln -s "$INSTALL_DIR/core" "$dir/core" 2>/dev/null || cp -r "$INSTALL_DIR/core" "$dir/core"
+    # Remove old symlink if present (plugin now finds core via install dir path)
+    rm -f "$dir/core" 2>/dev/null || true
+    rm -rf "$dir/__pycache__" 2>/dev/null || true
     if [ -f "$HOME/.hermes/config.yaml" ]; then
         backup "$HOME/.hermes/config.yaml"
         if grep -q "provider: hindsight-custom" "$HOME/.hermes/config.yaml"; then

@@ -1,12 +1,13 @@
-"""Hermes Agent memory provider plugin.
+"""Hermes Agent memory provider plugin for Hindsight Custom.
 
-Wraps the core library as a Hermes MemoryProvider with:
-- Auto-retain on sync_turn (every N turns)
-- Auto-recall prefetch on session start
-- Session lifecycle hooks (switch, end, shutdown)
+Implements the Hermes MemoryProvider ABC by using the same core library
+that the MCP server uses. This ensures conformity across all agents:
+- MCP server: core library via MCP protocol
+- Hermes plugin: core library via direct Python import
+- Claude Code / Codex / OpenCode / Copilot: MCP server via stdio
 
-This is the only integration that uses Hermes-specific APIs.
-All other agents use the MCP server instead.
+The core library is installed at ~/.config/hindsight-custom/lib/.
+This plugin adds that path to sys.path and imports HindsightClient.
 """
 
 from __future__ import annotations
@@ -15,20 +16,23 @@ import json
 import logging
 import os
 import queue
+import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# Hermes imports — only available inside Hermes runtime
+# ── Hermes imports ──────────────────────────────────────────────────────────
 from agent.memory_provider import MemoryProvider
 
-# Core library
-_here = os.path.dirname(os.path.abspath(__file__))
-_repo_root = os.path.dirname(os.path.dirname(_here))
-if _repo_root not in sys.path:
-    import sys
-    sys.path.insert(0, _repo_root)
+# ── Core library ────────────────────────────────────────────────────────────
+# Find the installed core library (same code the MCP server uses)
+_INSTALL_DIR = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
+    "hindsight-custom", "lib"
+)
+if os.path.isdir(_INSTALL_DIR) and _INSTALL_DIR not in sys.path:
+    sys.path.insert(0, _INSTALL_DIR)
 
 from core.client import HindsightClient
 from core.config import load_config
@@ -36,7 +40,7 @@ from core.project import SHARED_BANK
 
 logger = logging.getLogger(__name__)
 
-# -- Tool schemas (exposed to the LLM) ------------------------------------
+# ── Tool schemas (exposed to the LLM via Hermes) ───────────────────────────
 
 _RETAIN_SCHEMA = {
     "name": "hindsight_retain",
@@ -50,11 +54,7 @@ _RETAIN_SCHEMA = {
         "properties": {
             "content": {"type": "string", "description": "The information to store."},
             "context": {"type": "string", "description": "Short label (e.g. 'user preference', 'project decision')."},
-            "tags": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Optional tags for categorisation.",
-            },
+            "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional tags."},
             "bank": {"type": "string", "description": "Override bank (default: auto-detected from project). Use 'system' for cross-project knowledge."},
         },
         "required": ["content"],
@@ -64,8 +64,7 @@ _RETAIN_SCHEMA = {
 _RECALL_SCHEMA = {
     "name": "hindsight_recall",
     "description": (
-        "Search long-term memory. Returns memories ranked by relevance using "
-        "semantic search, keyword matching, entity graph traversal, and reranking. "
+        "Search long-term memory. Returns memories ranked by relevance. "
         "Searches both the current project bank and the shared system bank."
     ),
     "parameters": {
@@ -80,10 +79,7 @@ _RECALL_SCHEMA = {
 
 _REFLECT_SCHEMA = {
     "name": "hindsight_reflect",
-    "description": (
-        "Synthesise a reasoned answer from long-term memories. Unlike recall, "
-        "this reasons across all stored memories to produce a coherent response."
-    ),
+    "description": "Synthesise a reasoned answer from long-term memories.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -100,11 +96,7 @@ _BANKS_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {
-                "type": "string",
-                "enum": ["list", "create", "delete", "stats"],
-                "description": "Action to perform.",
-            },
+            "action": {"type": "string", "enum": ["list", "create", "delete", "stats"], "description": "Action to perform."},
             "bank_id": {"type": "string", "description": "Bank ID (for create/delete/stats)."},
             "name": {"type": "string", "description": "Human-readable bank name (for create)."},
         },
@@ -118,11 +110,7 @@ _PROJECT_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {
-                "type": "string",
-                "enum": ["show", "set"],
-                "description": "'show' to display current routing, 'set' to override project name.",
-            },
+            "action": {"type": "string", "enum": ["show", "set"], "description": "'show' to display current routing, 'set' to override project name."},
             "project": {"type": "string", "description": "Project name (for 'set' action)."},
         },
         "required": ["action"],
@@ -130,12 +118,14 @@ _PROJECT_SCHEMA = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Provider
-# ---------------------------------------------------------------------------
+# ── Provider ────────────────────────────────────────────────────────────────
 
 class HindsightProjectProvider(MemoryProvider):
-    """Hindsight memory provider with per-project bank routing for Hermes."""
+    """Hindsight memory provider with per-project bank routing for Hermes.
+
+    Uses the same HindsightClient from core/ that the MCP server uses,
+    ensuring identical behaviour across all agent integrations.
+    """
 
     def __init__(self):
         self._client: HindsightClient | None = None
@@ -180,14 +170,13 @@ class HindsightProjectProvider(MemoryProvider):
         self._auto_retain = self._config.auto_retain
         self._retain_every_n_turns = self._config.retain_every_n_turns
 
-        # Mint document ID
         start_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         self._document_id = f"{self._session_id}-{start_ts}"
         self._session_turns = []
         self._turn_counter = 0
 
         logger.info(
-            "HindsightProject initialized: project=%s, bank=%s, shared=%s, retain_every=%d",
+            "hindsight-custom initialized: project=%s, bank=%s, shared=%s, retain_every=%d",
             self._client.project, self._client.project_bank,
             SHARED_BANK, self._retain_every_n_turns,
         )
@@ -204,7 +193,7 @@ class HindsightProjectProvider(MemoryProvider):
             f"Use `hindsight_project` to check or change the active project.\n"
         )
 
-    # -- Prefetch (auto-recall) ----------------------------------------------
+    # ── Prefetch (auto-recall) ──────────────────────────────────────────────
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if self._prefetch_thread and self._prefetch_thread.is_alive():
@@ -240,16 +229,9 @@ class HindsightProjectProvider(MemoryProvider):
         self._prefetch_thread = threading.Thread(target=_run, daemon=True, name="htp-prefetch")
         self._prefetch_thread.start()
 
-    # -- Sync turn (auto-retain) --------------------------------------------
+    # ── Sync turn (auto-retain) ─────────────────────────────────────────────
 
-    def sync_turn(
-        self,
-        user_content: str,
-        assistant_content: str,
-        *,
-        session_id: str = "",
-        messages: Optional[List[Dict[str, Any]]] = None,
-    ) -> None:
+    def sync_turn(self, user_content, assistant_content, *, session_id="", messages=None):
         if not self._auto_retain or self._shutting_down.is_set() or not self._client:
             return
         if session_id:
@@ -291,37 +273,30 @@ class HindsightProjectProvider(MemoryProvider):
         self._ensure_writer()
         self._retain_queue.put(_do_retain)
 
-    def _ensure_writer(self) -> None:
+    def _ensure_writer(self):
         if self._writer_thread and self._writer_thread.is_alive():
             return
-
         def _drain():
             while not self._shutting_down.is_set():
                 try:
                     job = self._retain_queue.get(timeout=1.0)
-                    if job is None:
-                        break
+                    if job is None: break
                     job()
-                except queue.Empty:
-                    continue
-
+                except queue.Empty: continue
         self._writer_thread = threading.Thread(target=_drain, daemon=True, name="htp-writer")
         self._writer_thread.start()
 
-    # -- Session lifecycle ---------------------------------------------------
+    # ── Session lifecycle ───────────────────────────────────────────────────
 
-    def on_session_switch(self, new_session_id: str, **kwargs) -> None:
+    def on_session_switch(self, new_session_id, **kwargs):
         new_id = str(new_session_id or "").strip()
-        if not new_id or not self._client:
-            return
+        if not new_id or not self._client: return
 
-        # Flush buffered turns
         if self._session_turns:
             old_content = "[" + ",".join(self._session_turns) + "]"
             try:
                 self._client.retain(
-                    content=old_content,
-                    context=self._retain_context,
+                    content=old_content, context=self._retain_context,
                     tags=[f"session:{self._session_id}"] if self._session_id else None,
                     document_id=self._document_id,
                 )
@@ -333,81 +308,66 @@ class HindsightProjectProvider(MemoryProvider):
         self._document_id = f"{self._session_id}-{start_ts}"
         self._session_turns = []
         self._turn_counter = 0
-
-        # Re-detect project (CWD may have changed)
         self._client.connect()
 
-    def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+    def on_session_end(self, messages):
         if self._session_turns and self._client:
             old_content = "[" + ",".join(self._session_turns) + "]"
             try:
                 self._client.retain(
-                    content=old_content,
-                    context=self._retain_context,
+                    content=old_content, context=self._retain_context,
                     tags=[f"session:{self._session_id}"] if self._session_id else None,
                     document_id=self._document_id,
                 )
             except Exception as e:
                 logger.debug("Session-end flush failed: %s", e)
 
-    def shutdown(self) -> None:
+    def shutdown(self):
         self._shutting_down.set()
         if self._session_turns and self._client:
-            try:
-                self.on_session_end([])
-            except Exception:
-                pass
+            try: self.on_session_end([])
+            except Exception: pass
         if self._writer_thread and self._writer_thread.is_alive():
             self._retain_queue.put(None)
             self._writer_thread.join(timeout=5)
         if self._client:
             self._client.shutdown()
 
-    # -- Tools ---------------------------------------------------------------
+    # ── Tools (same as MCP server tools) ────────────────────────────────────
 
-    def get_tool_schemas(self) -> List[Dict[str, Any]]:
+    def get_tool_schemas(self):
         return [_RETAIN_SCHEMA, _RECALL_SCHEMA, _REFLECT_SCHEMA, _BANKS_SCHEMA, _PROJECT_SCHEMA]
 
-    def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
+    def handle_tool_call(self, tool_name, args, **kwargs):
         if not self._client:
             return json.dumps({"error": "Hindsight client not initialized"})
 
         if tool_name == "hindsight_retain":
             return json.dumps(self._client.retain(
-                content=args.get("content", ""),
-                bank=args.get("bank", ""),
-                context=args.get("context"),
-                tags=args.get("tags"),
+                content=args.get("content", ""), bank=args.get("bank", ""),
+                context=args.get("context"), tags=args.get("tags"),
             ))
         elif tool_name == "hindsight_recall":
             return json.dumps(self._client.recall(
-                query=args.get("query", ""),
-                bank=args.get("bank", ""),
+                query=args.get("query", ""), bank=args.get("bank", ""),
             ))
         elif tool_name == "hindsight_reflect":
             return json.dumps(self._client.reflect(
-                query=args.get("query", ""),
-                bank=args.get("bank", ""),
+                query=args.get("query", ""), bank=args.get("bank", ""),
             ))
         elif tool_name == "hindsight_banks":
             action = args.get("action", "list")
-            if action == "list":
-                return json.dumps(self._client.list_banks())
-            elif action == "create":
-                return json.dumps(self._client.create_bank(args.get("bank_id", ""), args.get("name", "")))
-            elif action == "delete":
-                return json.dumps(self._client.delete_bank(args.get("bank_id", "")))
-            elif action == "stats":
-                return json.dumps(self._client.bank_stats(args.get("bank_id", "")))
+            if action == "list":   return json.dumps(self._client.list_banks())
+            if action == "create": return json.dumps(self._client.create_bank(args.get("bank_id", ""), args.get("name", "")))
+            if action == "delete": return json.dumps(self._client.delete_bank(args.get("bank_id", "")))
+            if action == "stats":  return json.dumps(self._client.bank_stats(args.get("bank_id", "")))
             return json.dumps({"error": f"Unknown action: {action}"})
         elif tool_name == "hindsight_project":
             action = args.get("action", "show")
-            if action == "show":
-                return json.dumps(self._client.project_info())
-            elif action == "set":
+            if action == "show": return json.dumps(self._client.project_info())
+            if action == "set":
                 project = args.get("project", "")
-                if not project:
-                    return json.dumps({"error": "project name required"})
+                if not project: return json.dumps({"error": "project name required"})
                 new_bank = self._client.set_project(project)
                 return json.dumps({"result": f"Project set to '{self._client.project}'", "project_bank": new_bank})
             return json.dumps({"error": f"Unknown action: {action}"})
@@ -415,10 +375,8 @@ class HindsightProjectProvider(MemoryProvider):
         return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
 
-# ---------------------------------------------------------------------------
-# Plugin registration
-# ---------------------------------------------------------------------------
+# ── Plugin registration ─────────────────────────────────────────────────────
 
-def register(ctx) -> None:
+def register(ctx):
     """Register as a Hermes memory provider plugin."""
     ctx.register_memory_provider(HindsightProjectProvider())
