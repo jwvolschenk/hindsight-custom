@@ -14,8 +14,14 @@ dependencies = [
     "mcp>=1.0.0",
 ]
 
+[project.optional-dependencies]
+installer = [
+    "textual>=0.86.0",
+]
+
 [project.scripts]
 hindsight-mcp = "mcp_server.server:main"
+hindsight-installer = "installer.tui:main"
 
 [tool.setuptools.packages.find]
-include = ["core*", "mcp_server*"]
+include = ["core*", "mcp_server*", "installer*"]

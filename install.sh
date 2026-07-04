@@ -7,7 +7,8 @@
 #   ./install.sh install               # skip mode prompt
 #   ./install.sh update                # update MCP server/core only
 #   ./install.sh uninstall             # selective uninstall
-#   ./install.sh install --agents 1,3  # pre-select agents by number
+#   ./install.sh install --agents codex,claude-code
+#   ./install.sh --legacy              # force shell UI
 #
 set -euo pipefail
 
@@ -22,6 +23,9 @@ TEMP_DIR=$(mktemp -d)
 # State
 MODE=""          # install, update, uninstall
 INSTALL_AGENTS=""
+SKIP_CONFIG=false
+FORCE_LEGACY=false
+YES=false
 AGENT_LIST="hermes claude-code opencode codex copilot"
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -32,6 +36,10 @@ trap cleanup EXIT
 # Interactive read — works when piped (curl | bash)
 ask() {
     local prompt="$1" varname="$2" default="${3:-}"
+    if $YES; then
+        eval "$varname='$default'"
+        return
+    fi
     if [ -t 0 ]; then
         read -rp "$prompt" "$varname"
     elif [ -r /dev/tty ]; then
@@ -296,11 +304,94 @@ has_agent() {
     echo ",$INSTALL_AGENTS," | grep -q ",$1," 2>/dev/null
 }
 
+normalize_agents() {
+    local raw="$1"
+    local out=""
+    local item key
+    raw="${raw// /}"
+    raw="${raw//;/,}"
+    IFS=',' read -ra parts <<< "$raw"
+    for item in "${parts[@]}"; do
+        key=""
+        case "$item" in
+            1|hermes) key="hermes" ;;
+            2|claude|claude-code) key="claude-code" ;;
+            3|opencode|open-code) key="opencode" ;;
+            4|codex|codex-cli) key="codex" ;;
+            5|copilot|github-copilot) key="copilot" ;;
+            "") ;;
+            *) echo "Unknown agent: $item" >&2; exit 1 ;;
+        esac
+        if [ -n "$key" ] && ! echo ",$out," | grep -q ",$key," 2>/dev/null; then
+            [ -n "$out" ] && out="$out,"
+            out="$out$key"
+        fi
+    done
+    INSTALL_AGENTS="$out"
+}
+
+all_detected_agents() {
+    local out=""
+    for agent in $AGENT_LIST; do
+        [ -z "${AGENT_INSTALLED[$agent]+x}" ] && continue
+        [ -n "$out" ] && out="$out,"
+        out="$out$agent"
+    done
+    INSTALL_AGENTS="$out"
+}
+
+maybe_launch_tui() {
+    $FORCE_LEGACY && return
+    [ -n "$MODE" ] && return
+    [ "${HINDSIGHT_INSTALLER_NO_TUI:-}" = "1" ] && return
+    [ -t 1 ] || return
+    command -v python3 &>/dev/null || return
+
+    local tui="$SRC/installer/tui.py"
+    if [ ! -f "$tui" ]; then
+        return
+    fi
+    [ -r /dev/tty ] && exec </dev/tty
+
+    if python3 -c "import textual" >/dev/null 2>&1; then
+        HINDSIGHT_INSTALLER_SCRIPT="$SRC/install.sh" python3 "$tui"
+        exit $?
+    fi
+
+    if command -v uv &>/dev/null; then
+        local venv="$TEMP_DIR/tui-venv"
+        if uv venv "$venv" --quiet >/dev/null 2>&1 && \
+           uv pip install --python "$venv/bin/python" textual --quiet >/dev/null 2>&1; then
+            HINDSIGHT_INSTALLER_SCRIPT="$SRC/install.sh" "$venv/bin/python" "$tui"
+            exit $?
+        fi
+    fi
+
+    if python3 -m venv "$TEMP_DIR/tui-venv" >/dev/null 2>&1; then
+        "$TEMP_DIR/tui-venv/bin/python" -m pip install --quiet textual >/dev/null 2>&1 || return
+        HINDSIGHT_INSTALLER_SCRIPT="$SRC/install.sh" "$TEMP_DIR/tui-venv/bin/python" "$tui"
+        exit $?
+    fi
+}
+
 # ── source fetching ─────────────────────────────────────────────────────────
 
 fetch_source() {
     echo "[*] Fetching source ..."
     local fetched=false
+    local script_dir=""
+
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd 2>/dev/null || true)"
+    if [ -n "$script_dir" ] && [ -d "$script_dir/core" ] && [ -d "$script_dir/mcp_server" ]; then
+        SRC="$script_dir"
+        echo "      Using local source: $SRC"
+        return
+    fi
+    if [ -d "$PWD/core" ] && [ -d "$PWD/mcp_server" ]; then
+        SRC="$PWD"
+        echo "      Using local source: $SRC"
+        return
+    fi
 
     if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
         gh repo clone "$REPO" "$TEMP_DIR/repo" -- --depth=1 --quiet 2>/dev/null && fetched=true
@@ -312,15 +403,24 @@ fetch_source() {
         mkdir -p "$TEMP_DIR/flat"
         for f in core/__init__.py core/project.py core/config.py core/client.py \
                  mcp_server/__init__.py mcp_server/__main__.py mcp_server/server.py \
-                 integrations/copilot/copilot-instructions.md; do
-            curl -fsSL "$BASE_URL/$f" -o "$TEMP_DIR/flat/$(basename "$f")" 2>/dev/null || true
+                 installer/__init__.py installer/tui.py \
+                 integrations/hermes/__init__.py integrations/hermes/config.example.json \
+                 integrations/claude-code/.claude-plugin/plugin.json \
+                 integrations/claude-code/hooks/hooks.json integrations/claude-code/hooks/recall.sh integrations/claude-code/hooks/retain.sh \
+                 integrations/codex/hooks/recall.py integrations/codex/hooks/retain.py \
+                 integrations/opencode/package.json integrations/opencode/tsconfig.json \
+                 integrations/opencode/src/project.ts integrations/opencode/src/client.ts integrations/opencode/src/index.ts \
+                 integrations/copilot/.claude-plugin/plugin.json integrations/copilot/hooks.json \
+                 integrations/copilot/copilot-instructions.md install.sh; do
+            mkdir -p "$TEMP_DIR/flat/$(dirname "$f")"
+            curl -fsSL "$BASE_URL/$f" -o "$TEMP_DIR/flat/$f" 2>/dev/null || true
         done
         fetched=true
     fi
 
     if [ -d "$TEMP_DIR/repo/core" ]; then
         SRC="$TEMP_DIR/repo"
-    elif [ -d "$TEMP_DIR/flat" ]; then
+    elif [ -d "$TEMP_DIR/flat/core" ]; then
         SRC="$TEMP_DIR/flat"
     else
         echo "ERROR: Could not fetch source."
@@ -331,6 +431,7 @@ fetch_source() {
 # ── config setup ────────────────────────────────────────────────────────────
 
 setup_config() {
+    $SKIP_CONFIG && return
     echo "[*] Config ..."
 
     local api_url="https://api.hindsight.vectorize.io"
@@ -681,12 +782,14 @@ else: os.remove(p)
 
 mode_install() {
     echo ""
-    echo "Select agents to install:"
-    echo ""
+    if [ -z "$INSTALL_AGENTS" ]; then
+        echo "Select agents to install:"
+        echo ""
 
-    if ! checkbox_select "all" "all-installed"; then
-        echo "No agents available."
-        return
+        if ! checkbox_select "all" "all-installed"; then
+            echo "No agents available."
+            return
+        fi
     fi
 
     if [ -z "$INSTALL_AGENTS" ]; then
@@ -710,7 +813,7 @@ mode_install() {
 
     echo ""
     echo "=== Done ==="
-    echo "Config: $CONFIG_FILE"
+    [ -f "$CONFIG_FILE" ] && echo "Config: $CONFIG_FILE"
     echo "Restart your agents to activate."
 }
 
@@ -752,12 +855,14 @@ mode_update() {
 
 mode_uninstall() {
     echo ""
-    echo "Select agents to uninstall:"
-    echo ""
+    if [ -z "$INSTALL_AGENTS" ]; then
+        echo "Select agents to uninstall:"
+        echo ""
 
-    if ! checkbox_select "installed" "all-installed"; then
-        echo "Nothing to uninstall."
-        return
+        if ! checkbox_select "installed" "all-installed"; then
+            echo "Nothing to uninstall."
+            return
+        fi
     fi
 
     if [ -z "$INSTALL_AGENTS" ]; then
@@ -806,14 +911,20 @@ echo ""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         install|update|uninstall) MODE="$1"; shift ;;
-        --agents) INSTALL_AGENTS="$2"; shift 2 ;;
+        --agents) normalize_agents "$2"; shift 2 ;;
+        --all) INSTALL_AGENTS="__ALL__"; shift ;;
+        --skip-config) SKIP_CONFIG=true; shift ;;
+        --yes|-y) YES=true; shift ;;
+        --legacy) FORCE_LEGACY=true; shift ;;
         -h|--help)
-            echo "Usage: install.sh [install|update|uninstall] [--agents 1,3]"
+            echo "Usage: install.sh [install|update|uninstall] [--agents codex,claude-code] [--all] [--legacy]"
             echo ""
             echo "  install    Configure agents + MCP server"
             echo "  update     Update MCP server + core library only"
             echo "  uninstall  Remove agent configs"
-            echo "  --agents   Pre-select agents by number (comma-separated)"
+            echo "  --agents   Pre-select agents by name or number (comma-separated)"
+            echo "  --all      Select every detected agent"
+            echo "  --legacy   Force the shell UI instead of the Textual TUI"
             exit 0
             ;;
         *) echo "Unknown: $1"; exit 1 ;;
@@ -825,6 +936,9 @@ detect_agents
 
 # Fetch source (needed for all modes)
 fetch_source
+
+[ "$INSTALL_AGENTS" = "__ALL__" ] && all_detected_agents
+maybe_launch_tui
 
 # Mode selection
 if [ -z "$MODE" ]; then

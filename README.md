@@ -172,16 +172,32 @@ sequenceDiagram
 curl -fsSL https://raw.githubusercontent.com/jwvolschenk/hindsight-custom/main/install.sh | bash
 ```
 
+On an interactive terminal the installer opens **Hindsight Control**, a Textual
+management UI for configuring API settings, installing agent integrations,
+updating the shared MCP server, and selectively uninstalling integrations.
+
+Force the legacy shell installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jwvolschenk/hindsight-custom/main/install.sh | bash -s -- --legacy
+```
+
 Install specific agents only:
 
 ```bash
-./install.sh --agents claude-code,codex
+./install.sh install --agents claude-code,codex
 ```
 
 Non-interactive (all agents, no prompts):
 
 ```bash
-./install.sh --all
+./install.sh install --all --yes
+```
+
+Build a standalone TUI binary:
+
+```bash
+./scripts/build-installer-binary.sh
 ```
 
 ## Configuration
