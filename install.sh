@@ -241,8 +241,8 @@ prompt_user() {
 
     # Save terminal state and go raw
     local old_stty
-    old_stty=$(stty -g)
-    stty -echo -icanon min 0 time 0
+    old_stty=$(stty -g < /dev/tty)
+    stty -echo -icanon min 0 time 0 < /dev/tty
 
     draw() {
         printf "\r\033[%dA" "$count" 2>/dev/null  # move up to start
@@ -272,13 +272,13 @@ prompt_user() {
 
     while true; do
         local key=""
-        IFS= read -rsn1 key
+        IFS= read -rsn1 key < /dev/tty
 
         # Handle escape sequences (arrow keys)
         if [[ "$key" == $'\x1b' ]]; then
-            IFS= read -rsn1 -t 0.1 key
+            IFS= read -rsn1 -t 0.1 key < /dev/tty
             if [[ "$key" == "[" ]]; then
-                IFS= read -rsn1 -t 0.1 key
+                IFS= read -rsn1 -t 0.1 key < /dev/tty
                 case "$key" in
                     A) # Up
                         cursor=$(( (cursor - 1 + count) % count ))
@@ -305,7 +305,7 @@ prompt_user() {
     done
 
     # Restore terminal
-    stty "$old_stty"
+    stty "$old_stty" < /dev/tty
 
     # Collect selected agents
     INSTALL_AGENTS=""
