@@ -15,6 +15,7 @@ set -euo pipefail
 REPO="jwvolschenk/hindsight-custom"
 BRANCH="main"
 BASE_URL="https://raw.githubusercontent.com/$REPO/$BRANCH"
+RELEASE_VERSION="${HINDSIGHT_INSTALLER_VERSION:-latest}"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/hindsight-custom"
 CONFIG_FILE="$CONFIG_DIR/config.json"
 INSTALL_DIR="$CONFIG_DIR/lib"
@@ -358,6 +359,67 @@ run_limited() {
     else
         "$@"
     fi
+}
+
+installer_asset_name() {
+    local os arch
+    os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    arch="$(uname -m)"
+
+    case "$os" in
+        linux) os="linux" ;;
+        *) return 1 ;;
+    esac
+
+    case "$arch" in
+        x86_64|amd64) arch="x86_64" ;;
+        aarch64|arm64) arch="aarch64" ;;
+        *) return 1 ;;
+    esac
+
+    printf "hindsight-installer-%s-%s" "$os" "$arch"
+}
+
+release_download_url() {
+    local asset="$1"
+    if [ "$RELEASE_VERSION" = "latest" ]; then
+        printf "https://github.com/%s/releases/latest/download/%s" "$REPO" "$asset"
+    else
+        printf "https://github.com/%s/releases/download/%s/%s" "$REPO" "$RELEASE_VERSION" "$asset"
+    fi
+}
+
+maybe_launch_binary() {
+    $FORCE_LEGACY && return 0
+    [ -n "$MODE" ] && return 0
+    [ "${HINDSIGHT_INSTALLER_NO_TUI:-}" = "1" ] && return 0
+    [ -t 1 ] || return 0
+    command -v curl &>/dev/null || return 0
+
+    local asset url binary
+    if ! asset="$(installer_asset_name)"; then
+        echo "      No prebuilt installer binary for this platform; using legacy installer."
+        return 0
+    fi
+
+    url="$(release_download_url "$asset")"
+    binary="$TEMP_DIR/$asset"
+
+    echo "[*] Downloading Hindsight Control binary ..."
+    if ! curl --connect-timeout 10 --max-time 90 -fsSL "$url" -o "$binary" 2>/dev/null; then
+        echo "      Binary unavailable at $url"
+        echo "      Falling back to source installer."
+        return 0
+    fi
+
+    chmod +x "$binary"
+    if { : < /dev/tty; } 2>/dev/null; then
+        exec </dev/tty
+    fi
+
+    echo "[*] Starting Hindsight Control ..."
+    HINDSIGHT_INSTALLER_BOOTSTRAP="$0" "$binary"
+    exit $?
 }
 
 maybe_launch_tui() {
@@ -976,6 +1038,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Detect installed agents
+maybe_launch_binary
 detect_agents
 
 # Fetch source (needed for all modes)

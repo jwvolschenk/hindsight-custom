@@ -172,9 +172,12 @@ sequenceDiagram
 curl -fsSL https://raw.githubusercontent.com/jwvolschenk/hindsight-custom/main/install.sh | bash
 ```
 
-On an interactive terminal the installer opens **Hindsight Control**, a Textual
-management UI for configuring API settings, installing agent integrations,
-updating the shared MCP server, and selectively uninstalling integrations.
+On an interactive Linux terminal, the bootstrap downloads the latest
+`hindsight-installer-linux-x86_64` binary from GitHub Releases and opens
+**Hindsight Control**, a Textual management UI for configuring API settings,
+installing agent integrations, updating the shared MCP server, and selectively
+uninstalling integrations. If the binary is unavailable, the script falls back
+to the shell installer.
 
 Force the legacy shell installer:
 
@@ -198,6 +201,13 @@ Build a standalone TUI binary:
 
 ```bash
 ./scripts/build-installer-binary.sh
+```
+
+Publish a release binary by pushing a `v*` tag, for example:
+
+```bash
+git tag v2.0.1
+git push origin v2.0.1
 ```
 
 ## Configuration

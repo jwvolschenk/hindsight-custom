@@ -7,7 +7,7 @@ cd "$ROOT_DIR"
 python3 -m pip install --user --quiet ".[installer]" pyinstaller
 python3 -m PyInstaller \
   --onefile \
-  --name hindsight-installer \
+  --name hindsight-installer-linux-x86_64 \
   --collect-all textual \
   --add-data "install.sh:." \
   --distpath dist \
@@ -16,4 +16,4 @@ python3 -m PyInstaller \
   --noconfirm \
   installer/tui.py
 
-echo "Binary: dist/hindsight-installer"
+echo "Binary: dist/hindsight-installer-linux-x86_64"
