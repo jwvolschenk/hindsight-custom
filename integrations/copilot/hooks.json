@@ -1,0 +1,12 @@
+{
+    "version": 1,
+    "hooks": {
+        "sessionStart": [
+            {
+                "type": "command",
+                "bash": "echo 'Hindsight memory available: use hindsight_recall to search, hindsight_retain to store.'",
+                "timeoutSec": 5
+            }
+        ]
+    }
+}

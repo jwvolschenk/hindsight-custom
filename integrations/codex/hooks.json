@@ -1,16 +1,18 @@
 {
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "command": "python3",
-        "args": ["__HOOKS_DIR__/recall.py"]
-      }
-    ],
-    "Stop": [
-      {
-        "command": "python3",
-        "args": ["__HOOKS_DIR__/retain.py"]
-      }
-    ]
-  }
+    "hooks": {
+        "UserPromptSubmit": [
+            {
+                "type": "command",
+                "command": "python3",
+                "args": ["__HOOKS_DIR__/hindsight-recall.py"]
+            }
+        ],
+        "Stop": [
+            {
+                "type": "command",
+                "command": "python3",
+                "args": ["__HOOKS_DIR__/hindsight-retain.py"]
+            }
+        ]
+    }
 }

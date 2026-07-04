@@ -129,11 +129,61 @@ const HindsightPlugin: Plugin = async (input, _options) => {
 
     // ── Hooks ───────────────────────────────────────────────────────────────
 
+    // Track state across sessions
+    let turnCount = 0;
+    let lastRecalledSession: string | null = null;
+
     return {
         tool: {
             hindsight_retain,
             hindsight_recall,
             hindsight_reflect,
+        },
+
+        // Auto-inject memories into system prompt on first message
+        "system.transform": async (input: { sessionID?: string }) => {
+            const sessionId = input.sessionID || "default";
+            if (lastRecalledSession === sessionId) return { system: [] };
+            lastRecalledSession = sessionId;
+
+            try {
+                const resp = await client.recall(projectBank, "project context and key decisions", {
+                    maxTokens: config.recallMaxTokens,
+                });
+                const results = resp.results || [];
+                if (!results.length) return { system: [] };
+
+                const memories = results
+                    .filter(r => r.text)
+                    .map(r => `- ${r.text}`)
+                    .join("\n");
+
+                return {
+                    system: [
+                        `# Hindsight Memory (project: ${projectBank})`,
+                        "Use this context from prior sessions:",
+                        memories,
+                    ],
+                };
+            } catch {
+                return { system: [] };
+            }
+        },
+
+        // Auto-retain when session becomes idle
+        "session.idle": async () => {
+            turnCount++;
+            // Auto-retain every 3 turns
+            if (turnCount % 3 !== 0) return;
+
+            try {
+                await client.retain(projectBank, `Session activity: ${turnCount} turns completed`, {
+                    context: config.retainContext,
+                    tags: ["auto-retain", "opencode"],
+                });
+            } catch {
+                // Silent failure
+            }
         },
     };
 };

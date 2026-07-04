@@ -1,0 +1,18 @@
+{
+    "hooks": {
+        "UserPromptSubmit": [
+            {
+                "type": "command",
+                "command": "bash",
+                "args": ["-c", "source \"$HOME/.claude/plugins/hindsight-custom/hooks/recall.sh\" 2>/dev/null || true"]
+            }
+        ],
+        "Stop": [
+            {
+                "type": "command",
+                "command": "bash",
+                "args": ["-c", "source \"$HOME/.claude/plugins/hindsight-custom/hooks/retain.sh\" 2>/dev/null || true"]
+            }
+        ]
+    }
+}

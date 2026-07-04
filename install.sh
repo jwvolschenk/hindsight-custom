@@ -423,12 +423,16 @@ install_claude() {
     local dir="$HOME/.claude"
     mkdir -p "$dir/hooks"
 
-    # Plugin manifest
+    # Plugin with bundled hooks
     local plugin_dir="$dir/plugins/hindsight-custom"
-    mkdir -p "$plugin_dir/.claude-plugin"
+    mkdir -p "$plugin_dir/.claude-plugin" "$plugin_dir/hooks"
     cp "$SRC/integrations/claude-code/.claude-plugin/plugin.json" "$plugin_dir/.claude-plugin/"
+    cp "$SRC/integrations/claude-code/hooks/hooks.json" "$plugin_dir/hooks/"
+    cp "$SRC/integrations/claude-code/hooks/recall.sh" "$plugin_dir/hooks/"
+    cp "$SRC/integrations/claude-code/hooks/retain.sh" "$plugin_dir/hooks/"
+    chmod +x "$plugin_dir/hooks/"*.sh
 
-    # Hook scripts
+    # Also install hooks globally (fallback if plugin hooks don't fire)
     cp "$SRC/integrations/claude-code/hooks/recall.sh" "$dir/hooks/hindsight-recall.sh"
     cp "$SRC/integrations/claude-code/hooks/retain.sh" "$dir/hooks/hindsight-retain.sh"
     chmod +x "$dir/hooks/"hindsight-*.sh
@@ -568,11 +572,17 @@ with open('$mcp','w') as f: json.dump(d,f,indent=2); f.write('\n')
         echo "{\"servers\":{\"hindsight\":{\"command\":\"python3\",\"args\":[\"-m\",\"mcp_server\"],\"cwd\":\"$INSTALL_DIR\"}}}" > "$mcp"
     fi
 
+    # Plugin manifest + hooks
+    local plugin_dir="$CONFIG_DIR/copilot-plugin"
+    mkdir -p "$plugin_dir/.claude-plugin"
+    cp "$SRC/integrations/copilot/.claude-plugin/plugin.json" "$plugin_dir/.claude-plugin/"
+    cp "$SRC/integrations/copilot/hooks.json" "$plugin_dir/" 2>/dev/null || true
+
     local instructions="$HOME/.github/copilot-instructions.md"
     mkdir -p "$HOME/.github"
     backup "$instructions"
     inject_section "$instructions" "$SRC/integrations/copilot/copilot-instructions.md"
-    echo "  [✓] Copilot"
+    echo "  [✓] Copilot (plugin + MCP + instructions)"
 }
 
 # ── agent uninstall ─────────────────────────────────────────────────────────
