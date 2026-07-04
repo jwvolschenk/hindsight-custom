@@ -42,9 +42,8 @@ ask() {
     fi
     if [ -t 0 ]; then
         read -rp "$prompt" "$varname"
-    elif [ -r /dev/tty ]; then
-        printf "%s" "$prompt" > /dev/tty
-        read -r "$varname" < /dev/tty
+    elif { printf "%s" "$prompt" > /dev/tty && read -r "$varname" < /dev/tty; } 2>/dev/null; then
+        return
     else
         eval "$varname='$default'"
     fi
@@ -220,6 +219,17 @@ checkbox_select() {
         return 1
     fi
 
+    if ! { : < /dev/tty; } 2>/dev/null; then
+        INSTALL_AGENTS=""
+        for i in $(seq 0 $((count - 1))); do
+            if [ "${STATE_LIST[$i]:-0}" -eq 1 ]; then
+                [ -n "$INSTALL_AGENTS" ] && INSTALL_AGENTS="$INSTALL_AGENTS,"
+                INSTALL_AGENTS="$INSTALL_AGENTS${KEY_LIST[$i]}"
+            fi
+        done
+        return 0
+    fi
+
     local cursor=0
     local _drawn=0
 
@@ -393,11 +403,15 @@ fetch_source() {
         return
     fi
 
-    if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
-        gh repo clone "$REPO" "$TEMP_DIR/repo" -- --depth=1 --quiet 2>/dev/null && fetched=true
+    if ! $fetched && command -v git &>/dev/null; then
+        GIT_TERMINAL_PROMPT=0 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=15 \
+            clone --depth=1 --branch "$BRANCH" "https://github.com/$REPO.git" "$TEMP_DIR/repo" --quiet 2>/dev/null && fetched=true
     fi
-    if ! $fetched; then
-        git clone --depth=1 "git@github.com:$REPO.git" "$TEMP_DIR/repo" --quiet 2>/dev/null && fetched=true
+    if ! $fetched && command -v curl &>/dev/null && command -v tar &>/dev/null; then
+        mkdir -p "$TEMP_DIR/tarball"
+        if curl --connect-timeout 10 --max-time 60 -fsSL "https://github.com/$REPO/archive/refs/heads/$BRANCH.tar.gz" -o "$TEMP_DIR/source.tar.gz" 2>/dev/null; then
+            tar -xzf "$TEMP_DIR/source.tar.gz" -C "$TEMP_DIR/tarball" --strip-components=1 2>/dev/null && fetched=true
+        fi
     fi
     if ! $fetched; then
         mkdir -p "$TEMP_DIR/flat"
@@ -413,13 +427,15 @@ fetch_source() {
                  integrations/copilot/.claude-plugin/plugin.json integrations/copilot/hooks.json \
                  integrations/copilot/copilot-instructions.md install.sh; do
             mkdir -p "$TEMP_DIR/flat/$(dirname "$f")"
-            curl -fsSL "$BASE_URL/$f" -o "$TEMP_DIR/flat/$f" 2>/dev/null || true
+            curl --connect-timeout 10 --max-time 30 -fsSL "$BASE_URL/$f" -o "$TEMP_DIR/flat/$f" 2>/dev/null || true
         done
         fetched=true
     fi
 
     if [ -d "$TEMP_DIR/repo/core" ]; then
         SRC="$TEMP_DIR/repo"
+    elif [ -d "$TEMP_DIR/tarball/core" ]; then
+        SRC="$TEMP_DIR/tarball"
     elif [ -d "$TEMP_DIR/flat/core" ]; then
         SRC="$TEMP_DIR/flat"
     else
