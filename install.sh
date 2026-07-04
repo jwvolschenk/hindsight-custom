@@ -224,61 +224,88 @@ prompt_user() {
         return
     fi
 
-    # Build agent list — detected agents are pre-selected
+    # Build agent list — all deselected by default
     local -a AGENT_KEYS=()
     local -a AGENT_LABELS=()
-    local -a AGENT_STATE=()  # 1=selected, 0=not selected
+    local -a AGENT_STATE=()  # 1=selected, 0=not
     for agent in $AGENT_LIST; do
         if [ -n "${AGENT_FOUND[$agent]+x}" ]; then
             AGENT_KEYS+=("$agent")
             AGENT_LABELS+=("${AGENT_FOUND[$agent]}")
-            AGENT_STATE+=(1)  # pre-select detected agents
+            AGENT_STATE+=(0)
         fi
     done
     local count=${#AGENT_KEYS[@]}
+    local cursor=0
+    local need_draw=1
 
-    # Interactive checkbox loop
-    local input=""
-    while true; do
-        # Clear previous output (move cursor up and clear lines)
-        if [ -n "$input" ]; then
-            printf "\033[%dA" $((count + 3))
-            for _ in $(seq 1 $((count + 3))); do
-                printf "\033[2K\n"
-            done
-            printf "\033[%dA" $((count + 3))
-        fi
+    # Save terminal state and go raw
+    local old_stty
+    old_stty=$(stty -g)
+    stty -echo -icanon min 0 time 0
 
-        echo "Select agents to install:"
-        echo ""
+    draw() {
+        printf "\r\033[%dA" "$count" 2>/dev/null  # move up to start
         for i in $(seq 0 $((count - 1))); do
-            local num=$((i + 1))
+            printf "\033[2K"  # clear line
+            local marker="[ ]"
+            local color=""
+            local reset=""
             if [ "${AGENT_STATE[$i]}" -eq 1 ]; then
-                printf "  \033[32m[x]\033[0m %d. %s (%s)\n" "$num" "${AGENT_LABELS[$i]}" "${AGENT_KEYS[$i]}"
-            else
-                printf "  [ ] %d. %s (%s)\n" "$num" "${AGENT_LABELS[$i]}" "${AGENT_KEYS[$i]}"
+                marker="[x]"
+                color="\033[32m"
+                reset="\033[0m"
             fi
+            local pointer="  "
+            if [ "$i" -eq "$cursor" ]; then
+                pointer="\033[36m>\033[0m "
+            fi
+            printf "  %b%s%b %d. %s (%s)\n" "$pointer" "$color" "$marker" "$reset" "$((i + 1))" "${AGENT_LABELS[$i]}" "${AGENT_KEYS[$i]}"
         done
-        echo ""
-        printf "  Type number to toggle, Enter to confirm: "
+        printf "\033[2K\n\033[2K  \033[90m↑↓ navigate  space toggle  enter confirm\033[0m\n"
+    }
 
-        read -r input < /dev/tty 2>/dev/null || read -r input
+    # Initial draw
+    echo ""
+    for _ in $(seq 1 $((count + 2))); do echo ""; done
+    draw
 
-        # Enter = confirm
-        if [ -z "$input" ]; then
+    while true; do
+        local key=""
+        IFS= read -rsn1 key
+
+        # Handle escape sequences (arrow keys)
+        if [[ "$key" == $'\x1b' ]]; then
+            IFS= read -rsn1 -t 0.1 key
+            if [[ "$key" == "[" ]]; then
+                IFS= read -rsn1 -t 0.1 key
+                case "$key" in
+                    A) # Up
+                        cursor=$(( (cursor - 1 + count) % count ))
+                        draw
+                        ;;
+                    B) # Down
+                        cursor=$(( (cursor + 1) % count ))
+                        draw
+                        ;;
+                esac
+            fi
+        elif [[ "$key" == " " ]]; then
+            # Toggle
+            if [ "${AGENT_STATE[$cursor]}" -eq 1 ]; then
+                AGENT_STATE[$cursor]=0
+            else
+                AGENT_STATE[$cursor]=1
+            fi
+            draw
+        elif [[ "$key" == "" ]] || [[ "$key" == $'\n' ]]; then
+            # Enter = confirm
             break
         fi
-
-        # Toggle by number
-        if [[ "$input" =~ ^[0-9]+$ ]] && [ "$input" -ge 1 ] && [ "$input" -le "$count" ]; then
-            local idx=$((input - 1))
-            if [ "${AGENT_STATE[$idx]}" -eq 1 ]; then
-                AGENT_STATE[$idx]=0
-            else
-                AGENT_STATE[$idx]=1
-            fi
-        fi
     done
+
+    # Restore terminal
+    stty "$old_stty"
 
     # Collect selected agents
     INSTALL_AGENTS=""
