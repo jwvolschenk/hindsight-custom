@@ -27,6 +27,38 @@ TEMP_DIR=$(mktemp -d)
 INSTALL_AGENTS=""
 UNINSTALL=false
 
+# Interactive read — works when piped (curl | bash) by reading from /dev/tty
+ask() {
+    local prompt="$1"
+    local varname="$2"
+    local default="${3:-}"
+    if [ -t 0 ]; then
+        # stdin is a terminal — normal read
+        read -rp "$prompt" "$varname"
+    elif [ -r /dev/tty ]; then
+        # stdin is a pipe (curl | bash) — read from terminal directly
+        printf "%s" "$prompt" > /dev/tty
+        read -r "$varname" < /dev/tty
+    else
+        # No terminal available — use default
+        eval "$varname='$default'"
+    fi
+}
+
+# Backup a config file before modifying it
+backup() {
+    local file="$1"
+    if [ -f "$file" ]; then
+        local backup_dir="${CONFIG_DIR}/backups"
+        mkdir -p "$backup_dir"
+        local ts=$(date +%Y%m%d_%H%M%S)
+        local base=$(basename "$file")
+        local backup="$backup_dir/${base}.${ts}.bak"
+        cp "$file" "$backup"
+        echo "      Backed up: $file -> $backup"
+    fi
+}
+
 cleanup() { rm -rf "$TEMP_DIR"; }
 trap cleanup EXIT
 
@@ -94,7 +126,7 @@ prompt_user() {
         echo "No supported agents detected."
         echo "Available agents: $AGENT_LIST"
         echo ""
-        read -rp "Enter agents to install (comma-separated, or 'all'): " choice
+        ask "Enter agents to install (comma-separated, or 'all'): " choice ""
         if [ -z "$choice" ]; then
             echo "No agents selected. Exiting."
             exit 0
@@ -119,7 +151,7 @@ prompt_user() {
     echo "  [M] Manual selection (type agent names)"
     echo ""
 
-    read -rp "Select agents to install [A]: " choice
+    ask "Select agents to install [A]: " choice "A"
     choice="${choice:-A}"
 
     if [ "$choice" = "A" ] || [ "$choice" = "a" ]; then
@@ -127,7 +159,7 @@ prompt_user() {
     elif [ "$choice" = "M" ] || [ "$choice" = "m" ]; then
         echo ""
         echo "Available: $AGENT_LIST"
-        read -rp "Enter agents (comma-separated): " INSTALL_AGENTS
+        ask "Enter agents (comma-separated): " INSTALL_AGENTS ""
     elif [[ "$choice" =~ ^[0-9]+$ ]]; then
         # Single number selection
         local idx=$((choice - 1))
@@ -307,7 +339,7 @@ if [ -f "$CONFIG_FILE" ]; then
         [ -n "$EXISTING_KEY" ] && API_KEY="$EXISTING_KEY" && HAS_KEY=true
     fi
     echo ""
-    read -rp "      Reconfigure endpoint and key? [y/N]: " reconfig
+    ask "      Reconfigure endpoint and key? [y/N]: " reconfig "N"
     if [ "$reconfig" != "y" ] && [ "$reconfig" != "Y" ]; then
         echo "      Keeping existing config."
     else
@@ -324,18 +356,18 @@ if [ ! -f "$CONFIG_FILE" ]; then
     echo "      [1] Default (https://api.hindsight.vectorize.io — cloud)"
     echo "      [2] Self-hosted (enter your own URL)"
     echo ""
-    read -rp "      Select endpoint [1]: " endpoint_choice
+    ask "      Select endpoint [1]: " endpoint_choice "1"
     endpoint_choice="${endpoint_choice:-1}"
 
     if [ "$endpoint_choice" = "2" ]; then
-        read -rp "      Enter Hindsight API URL: " custom_url
+        ask "      Enter Hindsight API URL: " custom_url ""
         if [ -n "$custom_url" ]; then
             API_URL="$custom_url"
         fi
     fi
 
     echo ""
-    read -rp "      Enter API key (leave blank to skip): " entered_key
+    ask "      Enter API key (leave blank to skip): " entered_key ""
     if [ -n "$entered_key" ]; then
         API_KEY="$entered_key"
         HAS_KEY=true
@@ -398,6 +430,7 @@ if should_install hermes; then
         cp -r "$INSTALL_DIR/core" "$HERMES_PLUGIN_DIR/core"
     fi
     HERMES_CONFIG="$HOME/.hermes/config.yaml"
+    backup "$HERMES_CONFIG"
     if [ -f "$HERMES_CONFIG" ]; then
         if grep -q "provider: hindsight-custom" "$HERMES_CONFIG"; then
             echo "  [✓] Hermes — already active"
@@ -430,6 +463,7 @@ if should_install claude-code; then
     fi
 
     if [ -f "$CLAUDE_SETTINGS" ] && command -v python3 &>/dev/null; then
+        backup "$CLAUDE_SETTINGS"
         python3 -c "
 import json
 with open('$CLAUDE_SETTINGS') as f:
@@ -468,6 +502,7 @@ fi
 if should_install opencode; then
     OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
     if [ -f "$OPENCODE_CONFIG" ] && command -v python3 &>/dev/null; then
+        backup "$OPENCODE_CONFIG"
         python3 -c "
 import json
 with open('$OPENCODE_CONFIG') as f:
@@ -520,6 +555,7 @@ if should_install codex; then
 
     # Wire hooks.json with correct absolute paths
     CODEX_HOOKS_JSON="$CODEX_DIR/hooks.json"
+    backup "$CODEX_HOOKS_JSON"
     python3 -c "
 import json, os
 
@@ -554,6 +590,7 @@ with open('$CODEX_HOOKS_JSON', 'w') as f:
 
     # Enable hooks in config.toml
     CODEX_CONFIG="$CODEX_DIR/config.toml"
+    backup "$CODEX_CONFIG"
     if [ -f "$CODEX_CONFIG" ]; then
         if ! grep -q "codex_hooks" "$CODEX_CONFIG" 2>/dev/null; then
             echo -e "\n[features]\ncodex_hooks = true" >> "$CODEX_CONFIG"
@@ -584,6 +621,7 @@ fi
 # GitHub Copilot
 if should_install copilot; then
     VSCODE_MCP="$HOME/.vscode/mcp.json"
+    backup "$VSCODE_MCP"
     if [ -f "$VSCODE_MCP" ] && command -v python3 &>/dev/null; then
         python3 -c "
 import json
@@ -619,6 +657,7 @@ VSCODE_CFG
     COPILOT_INSTRUCTIONS="$HOME/.github/copilot-instructions.md"
     if [ -f "$SRC/integrations/copilot/copilot-instructions.md" ]; then
         mkdir -p "$HOME/.github"
+        backup "$COPILOT_INSTRUCTIONS"
         if [ -f "$COPILOT_INSTRUCTIONS" ] && grep -q "Hindsight" "$COPILOT_INSTRUCTIONS" 2>/dev/null; then
             echo "  [✓] Copilot — instructions already present"
         else
