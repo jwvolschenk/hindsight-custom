@@ -247,29 +247,46 @@ prompt_user() {
     stty -echo -icanon min 0 time 0
 
     draw() {
-        printf "\r\033[%dA" "$count" 2>/dev/null  # move up to start
+        # Move cursor up to overwrite previous draw
+        if [ "$_drawn" -gt 0 ]; then
+            printf "\033[%dA" "$_drawn"
+        fi
+
+        local lines=0
+
         for i in $(seq 0 $((count - 1))); do
             printf "\033[2K"  # clear line
-            local marker="[ ]"
-            local color=""
-            local reset=""
-            if [ "${AGENT_STATE[$i]}" -eq 1 ]; then
-                marker="[x]"
-                color="\033[32m"
-                reset="\033[0m"
-            fi
-            local pointer="  "
+
+            # Cursor indicator
             if [ "$i" -eq "$cursor" ]; then
-                pointer="\033[36m>\033[0m "
+                printf "  \033[36m>\033[0m "
+            else
+                printf "    "
             fi
-            printf "  %b%s%b %d. %s (%s)\n" "$pointer" "$color" "$marker" "$reset" "$((i + 1))" "${AGENT_LABELS[$i]}" "${AGENT_KEYS[$i]}"
+
+            # Checkbox
+            if [ "${AGENT_STATE[$i]}" -eq 1 ]; then
+                printf "\033[32m[x]\033[0m "
+            else
+                printf "[ ] "
+            fi
+
+            # Label
+            printf "%d. %s (%s)\n" "$((i + 1))" "${AGENT_LABELS[$i]}" "${AGENT_KEYS[$i]}"
+            lines=$((lines + 1))
         done
-        printf "\033[2K\n\033[2K  \033[90m↑↓ navigate  space toggle  enter confirm\033[0m\n"
+
+        # Hint bar
+        printf "\033[2K\033[90m  ↑↓ navigate   space toggle   enter confirm\033[0m\n"
+        lines=$((lines + 1))
+
+        _drawn=$lines
     }
 
-    # Initial draw
+    # Reserve space and do initial draw
+    local _drawn=0
     echo ""
-    for _ in $(seq 1 $((count + 2))); do echo ""; done
+    for _ in $(seq 1 $((count + 1))); do echo ""; done
     draw
 
     while true; do
