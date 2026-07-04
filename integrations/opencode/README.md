@@ -1,12 +1,13 @@
 # OpenCode Integration for Hindsight Project Memory
 
-Adds project-aware Hindsight memory to [OpenCode](https://github.com/opencode-ai/opencode) via MCP server.
+Adds project-aware Hindsight memory to [OpenCode](https://github.com/opencode-ai/opencode) as a native plugin with tools and hooks.
 
 ## How it works
 
-1. **MCP server** provides retain/recall/reflect/tools via stdio transport
-2. OpenCode connects to the MCP server automatically
-3. Tools are available in the agent's tool palette
+1. **Native plugin** (TypeScript) registers `hindsight_retain`, `hindsight_recall`, `hindsight_reflect` as tools
+2. **Project detection** automatically routes memories to project-specific banks
+3. **MCP server** available as fallback if npm is not available for building the native plugin
+4. Uses the same project detection logic as the MCP server and Hermes plugin — identical behaviour across all agents
 
 ## Install
 
@@ -14,35 +15,37 @@ Adds project-aware Hindsight memory to [OpenCode](https://github.com/opencode-ai
 curl -fsSL https://raw.githubusercontent.com/jwvolschenk/hindsight-custom/main/install.sh | bash
 ```
 
-Or install just OpenCode integration:
+The installer will:
+1. Copy the plugin source to `~/.config/hindsight-custom/opencode-plugin/`
+2. Build the TypeScript plugin (if npm/pnpm is available)
+3. Add the plugin to `opencode.json`
 
-```bash
-./install.sh --agents opencode
-```
+If npm is not available, it falls back to MCP server configuration.
 
 ## What gets installed
 
-Adds the Hindsight MCP server to your `opencode.json` config.
+- `~/.config/hindsight-custom/opencode-plugin/` — built native plugin
+- `opencode.json` — plugin reference (or MCP server config as fallback)
 
-## Manual setup
+## Plugin structure
 
-Add to your `opencode.json` (project root or `~/.config/opencode/opencode.json`):
-
-```json
-{
-  "mcp": {
-    "hindsight": {
-      "command": "python3",
-      "args": ["-m", "mcp_server"],
-      "cwd": "/path/to/hindsight-custom",
-      "env": {
-        "HINDSIGHT_API_KEY": "your-key",
-        "HINDSIGHT_API_URL": "https://your-hindsight-server.com"
-      }
-    }
-  }
-}
 ```
+integrations/opencode/
+  package.json           # npm package manifest
+  tsconfig.json          # TypeScript config
+  src/
+    index.ts             # Plugin entry point (tools + hooks)
+    project.ts           # Project detection (git root → bank name)
+    client.ts            # Hindsight API client (fetch-based)
+```
+
+## Tools registered
+
+| Tool | Description |
+|------|-------------|
+| `hindsight_retain` | Store a memory (auto-routes to project bank) |
+| `hindsight_recall` | Search memories (project + system banks) |
+| `hindsight_reflect` | Reason across all memories |
 
 ## Bank routing
 
@@ -50,9 +53,13 @@ Add to your `opencode.json` (project root or `~/.config/opencode/opencode.json`)
 - Home directory or `/tmp` → bank `system`
 - Both are searched on every recall by default
 
-## Auto-retain
+## Config
 
-OpenCode's MCP integration handles tool calls automatically. The agent
-will use `hindsight_retain` when it identifies important information to
-store. For fully automatic retain, you can add a rule in your OpenCode
-config instructing the agent to retain after each significant exchange.
+Environment variables (set in `opencode.json` or shell):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HINDSIGHT_API_URL` | `https://api.hindsight.vectorize.io` | Hindsight API endpoint |
+| `HINDSIGHT_API_KEY` | (none) | API key |
+| `HINDSIGHT_BUDGET` | `mid` | Recall budget: low, mid, high |
+| `HINDSIGHT_SEARCH_SHARED` | `true` | Also search system bank |

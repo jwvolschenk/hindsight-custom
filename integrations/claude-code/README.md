@@ -1,56 +1,51 @@
 # Claude Code Integration for Hindsight Project Memory
 
-Adds project-aware Hindsight memory to [Claude Code](https://docs.anthropic.com/en/docs/claude-code) via MCP server + hook scripts.
+Adds project-aware Hindsight memory to [Claude Code](https://docs.anthropic.com/en/docs/claude-code) as a native plugin with MCP server + lifecycle hooks.
 
 ## How it works
 
-1. **MCP server** provides retain/recall/reflect/tools
-2. **Hook scripts** handle auto-recall on session start and auto-retain on session end
-3. **Settings** configure the MCP server connection
+1. **Plugin manifest** (`.claude-plugin/plugin.json`) — registers with Claude Code's plugin system
+2. **MCP server** provides retain/recall/reflect/tools via stdio transport
+3. **Hook scripts** handle auto-recall on prompt submit and auto-retain on response
+4. Uses the same core library as the MCP server — identical behaviour across all agents
 
 ## Install
-
-The unified installer handles everything:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jwvolschenk/hindsight-custom/main/install.sh | bash
 ```
 
-Or install just Claude Code integration:
+Or install just Claude Code:
 
 ```bash
-./install.sh --agents claude-code
+./install.sh install --agents 2
 ```
 
 ## What gets installed
 
+- `~/.claude/plugins/hindsight-custom/` — plugin manifest
 - `~/.claude/settings.json` — MCP server config (merged with existing)
-- `~/.claude/hooks/hindsight-retain.sh` — auto-retain hook
 - `~/.claude/hooks/hindsight-recall.sh` — auto-recall hook
+- `~/.claude/hooks/hindsight-retain.sh` — auto-retain hook
 
-## Manual setup
+## Plugin structure
 
-If you prefer to configure manually:
-
-1. Add to `~/.claude/settings.json`:
-```json
-{
-  "mcpServers": {
-    "hindsight": {
-      "command": "python3",
-      "args": ["-m", "mcp_server"],
-      "cwd": "/path/to/hindsight-custom",
-      "env": {
-        "HINDSIGHT_API_KEY": "your-key",
-        "HINDSIGHT_API_URL": "https://your-hindsight-server.com"
-      }
-    }
-  }
-}
+```
+.claude-plugin/
+  plugin.json          # Plugin manifest (name, version, description)
 ```
 
-2. The tools `hindsight_retain`, `hindsight_recall`, `hindsight_reflect`,
-   `hindsight_project`, and `hindsight_banks` will be available automatically.
+## MCP Server
+
+The MCP server runs via stdio and exposes five tools:
+
+| Tool | Description |
+|------|-------------|
+| `hindsight_retain` | Store a memory (auto-routes to project bank) |
+| `hindsight_recall` | Search memories (project + system banks) |
+| `hindsight_reflect` | Reason across all memories |
+| `hindsight_project` | Show/override active project |
+| `hindsight_banks` | List/create/delete banks |
 
 ## Bank routing
 

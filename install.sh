@@ -422,9 +422,18 @@ install_hermes() {
 install_claude() {
     local dir="$HOME/.claude"
     mkdir -p "$dir/hooks"
+
+    # Plugin manifest
+    local plugin_dir="$dir/plugins/hindsight-custom"
+    mkdir -p "$plugin_dir/.claude-plugin"
+    cp "$SRC/integrations/claude-code/.claude-plugin/plugin.json" "$plugin_dir/.claude-plugin/"
+
+    # Hook scripts
     cp "$SRC/integrations/claude-code/hooks/recall.sh" "$dir/hooks/hindsight-recall.sh"
     cp "$SRC/integrations/claude-code/hooks/retain.sh" "$dir/hooks/hindsight-retain.sh"
     chmod +x "$dir/hooks/"hindsight-*.sh
+
+    # MCP server config
     local settings="$dir/settings.json"
     backup "$settings"
     if [ -f "$settings" ] && command -v python3 &>/dev/null; then
@@ -438,24 +447,58 @@ with open('$settings','w') as f: json.dump(cfg,f,indent=2); f.write('\n')
         mkdir -p "$dir"
         echo "{\"mcpServers\":{\"hindsight\":{\"command\":\"python3\",\"args\":[\"-m\",\"mcp_server\"],\"cwd\":\"$INSTALL_DIR\"}}}" > "$settings"
     fi
-    echo "  [✓] Claude Code"
+    echo "  [✓] Claude Code (plugin + hooks + MCP)"
 }
 
 install_opencode() {
     local cfg="$HOME/.config/opencode/opencode.json"
     backup "$cfg"
+
+    # Install native plugin
+    local plugin_dir="$CONFIG_DIR/opencode-plugin"
+    mkdir -p "$plugin_dir/src"
+    cp "$SRC/integrations/opencode/package.json" "$plugin_dir/"
+    cp "$SRC/integrations/opencode/tsconfig.json" "$plugin_dir/"
+    cp "$SRC/integrations/opencode/src/"*.ts "$plugin_dir/src/" 2>/dev/null || true
+
+    # Build plugin if npm is available
+    local plugin_built=false
+    if command -v npm &>/dev/null; then
+        (cd "$plugin_dir" && npm install --silent 2>/dev/null && npm run build --silent 2>/dev/null) && plugin_built=true
+    elif command -v pnpm &>/dev/null; then
+        (cd "$plugin_dir" && pnpm install --silent 2>/dev/null && pnpm run build --silent 2>/dev/null) && plugin_built=true
+    fi
+
+    # Configure opencode.json
     if [ -f "$cfg" ] && command -v python3 &>/dev/null; then
         python3 -c "
 import json
 with open('$cfg') as f: d=json.load(f)
-d.setdefault('mcp',{})['hindsight']={'command':'python3','args':['-m','mcp_server'],'cwd':'$INSTALL_DIR'}
+# Add native plugin if built, otherwise MCP server
+if $plugin_built; then
+    plugins = d.get('plugin', [])
+    plugin_ref = 'file:$plugin_dir'
+    if plugin_ref not in plugins:
+        plugins.append(plugin_ref)
+    d['plugin'] = plugins
+else:
+    d.setdefault('mcp',{})['hindsight']={'command':'python3','args':['-m','mcp_server'],'cwd':'$INSTALL_DIR'}
 with open('$cfg','w') as f: json.dump(d,f,indent=2); f.write('\n')
 " 2>/dev/null
     else
         mkdir -p "$(dirname "$cfg")"
-        echo "{\"mcp\":{\"hindsight\":{\"command\":\"python3\",\"args\":[\"-m\",\"mcp_server\"],\"cwd\":\"$INSTALL_DIR\"}}}" > "$cfg"
+        if $plugin_built; then
+            echo "{\"plugin\":[\"file:$plugin_dir\"]}" > "$cfg"
+        else
+            echo "{\"mcp\":{\"hindsight\":{\"command\":\"python3\",\"args\":[\"-m\",\"mcp_server\"],\"cwd\":\"$INSTALL_DIR\"}}}" > "$cfg"
+        fi
     fi
-    echo "  [✓] OpenCode"
+
+    if $plugin_built; then
+        echo "  [✓] OpenCode (native plugin)"
+    else
+        echo "  [✓] OpenCode (MCP server — npm not available for native plugin)"
+    fi
 }
 
 install_codex() {
@@ -545,6 +588,7 @@ uninstall_hermes() {
 
 uninstall_claude() {
     rm -f "$HOME/.claude/hooks/hindsight-recall.sh" "$HOME/.claude/hooks/hindsight-retain.sh" 2>/dev/null || true
+    rm -rf "$HOME/.claude/plugins/hindsight-custom" 2>/dev/null || true
     if [ -f "$HOME/.claude/settings.json" ] && command -v python3 &>/dev/null; then
         backup "$HOME/.claude/settings.json"
         python3 -c "

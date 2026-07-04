@@ -1,0 +1,17 @@
+{
+    "name": "hindsight-custom",
+    "description": "Project-aware long-term memory via Hindsight. Automatically routes memories to project-specific banks based on the current git repository. Recalls relevant memories before each prompt, retains conversation transcripts, and provides memory management tools.",
+    "version": "1.0.0",
+    "author": {
+        "name": "jwvolschenk",
+        "url": "https://github.com/jwvolschenk/hindsight-custom"
+    },
+    "license": "MIT",
+    "keywords": [
+        "memory",
+        "hindsight",
+        "recall",
+        "retain",
+        "project-aware"
+    ]
+}
