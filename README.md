@@ -197,20 +197,14 @@ Non-interactive (all agents, no prompts):
 ./install.sh install --all --yes
 ```
 
-Build a standalone TUI binary:
-
-```bash
-./scripts/build-installer-binary.sh
-```
-
-Publish a release binary by pushing a `v*` tag, for example:
+Build and publish a release (builds the TUI binary locally, tags, and uploads to GitHub Releases):
 
 ```bash
 ./build.sh
 ```
 
-The script suggests the next semantic version from existing tags, pushes the
-selected tag, and watches the GitHub Actions release build.
+The script suggests the next semantic version from existing tags, builds the
+binary locally, and uploads it to a GitHub release.
 
 ## Configuration
 

@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
-# build.sh — create a new Hindsight Custom release tag and publish installer binary
+# build.sh — build the TUI binary, tag, and publish to GitHub Releases
 #
 # Usage:
 #   ./build.sh                 # prompt for next version based on latest tag
 #   ./build.sh v2.0.3          # release explicit tag
 #   ./build.sh --dry-run       # show what would happen without pushing
-#   ./build.sh --no-watch      # push tag but do not watch GitHub Actions
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$SCRIPT_DIR"
 REPO="jwvolschenk/hindsight-custom"
-WORKFLOW_NAME="Release Installer Binary"
+BINARY_NAME="hindsight-installer-linux-x86_64"
+BUILD_VENV="/tmp/hindsight-build-venv"
 
 DRY_RUN=false
-WATCH=true
 TAG=""
 
 R='\033[0;31m' G='\033[0;32m' Y='\033[0;33m' C='\033[0;36m'
@@ -28,10 +27,10 @@ die()  { err "$@"; exit 1; }
 
 usage() {
     cat <<EOF
-Usage: ./build.sh [tag] [--dry-run] [--no-watch]
+Usage: ./build.sh [tag] [--dry-run]
 
-Creates and pushes a version tag. The tag triggers GitHub Actions to build and
-upload the release binary: hindsight-installer-linux-x86_64.
+Builds the TUI binary locally, creates a version tag, and uploads the
+binary to GitHub Releases (no GitHub Actions needed).
 
 Examples:
   ./build.sh
@@ -44,7 +43,6 @@ parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --dry-run) DRY_RUN=true; shift ;;
-            --no-watch) WATCH=false; shift ;;
             -h|--help) usage; exit 0 ;;
             v*) TAG="$1"; shift ;;
             *) die "Unknown argument: $1" ;;
@@ -56,6 +54,7 @@ check_prereqs() {
     command -v git >/dev/null 2>&1 || die "git not found"
     command -v gh >/dev/null 2>&1 || die "gh CLI not found. Install: https://cli.github.com/"
     gh auth status >/dev/null 2>&1 || die "gh not authenticated. Run: gh auth login"
+    python3 -c "import venv" 2>/dev/null || die "python3 venv module not available"
 
     if [[ "$(gh api "repos/${REPO}" --jq '.permissions.push' 2>/dev/null || echo false)" != "true" ]]; then
         local active_user
@@ -161,13 +160,42 @@ validate_tag() {
     fi
 }
 
+build_binary() {
+    echo ""
+    info "Building ${BINARY_NAME} ..."
+
+    rm -rf "$BUILD_VENV"
+    python3 -m venv "$BUILD_VENV"
+    "$BUILD_VENV/bin/pip" install --quiet ".[installer]" pyinstaller
+
+    "$BUILD_VENV/bin/python" -m PyInstaller \
+        --onefile \
+        --name "$BINARY_NAME" \
+        --collect-all textual \
+        --add-data "$REPO_DIR/install.sh:." \
+        --distpath "$REPO_DIR/dist" \
+        --workpath /tmp/hindsight-installer-build \
+        --specpath /tmp/hindsight-installer-spec \
+        --noconfirm \
+        installer/tui.py
+
+    rm -rf "$BUILD_VENV" /tmp/hindsight-installer-build /tmp/hindsight-installer-spec
+
+    if [ ! -f "$REPO_DIR/dist/$BINARY_NAME" ]; then
+        die "Binary not found after build: dist/$BINARY_NAME"
+    fi
+
+    local size
+    size="$(du -h "$REPO_DIR/dist/$BINARY_NAME" | cut -f1)"
+    ok "Binary built: dist/$BINARY_NAME ($size)"
+}
+
 confirm_release() {
     echo ""
     printf "  ${W}This will:${N}\n"
     printf "    ${D}1.${N} Create annotated git tag ${C}%s${N}\n" "$TAG"
     printf "    ${D}2.${N} Push ${C}%s${N} to origin\n" "$TAG"
-    printf "    ${D}3.${N} Trigger ${C}%s${N} on GitHub Actions\n" "$WORKFLOW_NAME"
-    printf "    ${D}4.${N} Upload ${C}hindsight-installer-linux-x86_64${N} to GitHub Releases\n"
+    printf "    ${D}3.${N} Create GitHub release with ${C}%s${N}\n" "$BINARY_NAME"
     echo ""
 
     if $DRY_RUN; then
@@ -179,39 +207,25 @@ confirm_release() {
     [[ "$confirm" =~ ^[Yy]$ ]] || { printf "\n  ${D}Aborted.${N}\n\n"; exit 0; }
 }
 
-create_and_push_tag() {
+create_tag_and_release() {
     if $DRY_RUN; then
         info "Would run: git tag -a ${TAG} -m 'Release ${TAG}'"
         info "Would run: git push origin ${TAG}"
+        info "Would run: gh release create ${TAG} dist/${BINARY_NAME}"
         return
     fi
 
     git tag -a "$TAG" -m "Release $TAG"
     git push origin "$TAG"
     ok "Tag pushed: $TAG"
-}
 
-watch_release_workflow() {
-    $WATCH || return 0
-    $DRY_RUN && return 0
-
-    echo ""
-    info "Waiting for GitHub Actions run for ${TAG}..."
-
-    local run_id=""
-    for _ in $(seq 1 30); do
-        run_id="$(gh run list --repo "$REPO" --workflow "$WORKFLOW_NAME" --branch "$TAG" --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
-        [ -n "$run_id" ] && break
-        sleep 2
-    done
-
-    if [ -z "$run_id" ]; then
-        warn "Could not find workflow run yet. Check: https://github.com/${REPO}/actions"
-        return 0
-    fi
-
-    gh run watch "$run_id" --repo "$REPO" --exit-status
-    ok "Release workflow completed for ${TAG}"
+    gh release create "$TAG" \
+        "$REPO_DIR/dist/$BINARY_NAME" \
+        --repo "$REPO" \
+        --title "Release $TAG" \
+        --notes "Release $TAG — hindsight-installer-linux-x86_64" \
+        --clobber
+    ok "Release created with binary attached"
 }
 
 show_release() {
@@ -219,7 +233,7 @@ show_release() {
 
     echo ""
     printf "  ${G}Release:${N} ${C}https://github.com/%s/releases/tag/%s${N}\n" "$REPO" "$TAG"
-    printf "  ${G}Latest binary:${N} ${C}https://github.com/%s/releases/latest/download/hindsight-installer-linux-x86_64${N}\n" "$REPO"
+    printf "  ${G}Latest binary:${N} ${C}https://github.com/%s/releases/latest/download/%s${N}\n" "$REPO" "$BINARY_NAME"
     echo ""
 }
 
@@ -228,7 +242,7 @@ main() {
 
     echo ""
     printf "  ${W}Hindsight Custom release builder${N}\n"
-    printf "  ${D}Creates a version tag and publishes the installer binary via GitHub Actions.${N}\n"
+    printf "  ${D}Builds the TUI binary locally and uploads to GitHub Releases.${N}\n"
     echo ""
 
     check_prereqs
@@ -241,8 +255,8 @@ main() {
 
     info "Version tag: $TAG"
     confirm_release
-    create_and_push_tag
-    watch_release_workflow
+    build_binary
+    create_tag_and_release
     show_release
 }
 
