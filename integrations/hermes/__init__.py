@@ -153,6 +153,7 @@ class HindsightProjectProvider(MemoryProvider):
         self._retain_context: str = "conversation between Hermes Agent and the User"
         self._turn_counter: int = 0
         self._session_turns: list[str] = []
+        self._last_retained_index: int = 0
         self._document_id: str = ""
 
         # Writer queue for async retain
@@ -188,6 +189,7 @@ class HindsightProjectProvider(MemoryProvider):
         self._document_id = f"{self._session_id}-{start_ts}"
         self._session_turns = []
         self._turn_counter = 0
+        self._last_retained_index = 0
 
         logger.info(
             "hindsight-custom initialized: project=%s, bank=%s, shared=%s, retain_every=%d",
@@ -277,7 +279,13 @@ class HindsightProjectProvider(MemoryProvider):
         if self._turn_counter % self._retain_every_n_turns != 0:
             return
 
-        content = "[" + ",".join(self._session_turns) + "]"
+        # Only send turns that haven't been retained yet
+        new_turns = self._session_turns[self._last_retained_index:]
+        if not new_turns:
+            return
+
+        content = "[" + ",".join(new_turns) + "]"
+        self._last_retained_index = len(self._session_turns)
         tags = [f"session:{self._session_id}"] if self._session_id else None
 
         def _do_retain():
@@ -290,13 +298,13 @@ class HindsightProjectProvider(MemoryProvider):
                     document_id=self._document_id,
                     metadata={
                         "retained_at": now,
-                        "message_count": str(len(self._session_turns) * 2),
+                        "message_count": str(len(new_turns) * 2),
                         "turn_index": str(self._turn_counter),
                         "session_id": self._session_id,
                         "platform": self._platform,
                     },
                 )
-                logger.debug("Retain succeeded: %d turns", len(self._session_turns))
+                logger.debug("Retain succeeded: %d new turns", len(new_turns))
             except Exception as e:
                 logger.warning("Retain failed: %s", e)
 
@@ -322,8 +330,10 @@ class HindsightProjectProvider(MemoryProvider):
         new_id = str(new_session_id or "").strip()
         if not new_id or not self._client: return
 
-        if self._session_turns:
-            old_content = "[" + ",".join(self._session_turns) + "]"
+        # Flush only unsent turns from the old session
+        unsent = self._session_turns[self._last_retained_index:]
+        if unsent:
+            old_content = "[" + ",".join(unsent) + "]"
             try:
                 self._client.retain(
                     content=old_content, context=self._retain_context,
@@ -339,11 +349,13 @@ class HindsightProjectProvider(MemoryProvider):
         self._document_id = f"{self._session_id}-{start_ts}"
         self._session_turns = []
         self._turn_counter = 0
+        self._last_retained_index = 0
         self._client.connect()
 
     def on_session_end(self, messages):
-        if self._session_turns and self._client:
-            old_content = "[" + ",".join(self._session_turns) + "]"
+        unsent = self._session_turns[self._last_retained_index:]
+        if unsent and self._client:
+            old_content = "[" + ",".join(unsent) + "]"
             try:
                 self._client.retain(
                     content=old_content, context=self._retain_context,
@@ -351,6 +363,7 @@ class HindsightProjectProvider(MemoryProvider):
                     entities=self._host_entity(),
                     document_id=self._document_id,
                 )
+                self._last_retained_index = len(self._session_turns)
             except Exception as e:
                 logger.debug("Session-end flush failed: %s", e)
 
