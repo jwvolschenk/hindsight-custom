@@ -219,12 +219,14 @@ create_tag_and_release() {
     git push origin "$TAG"
     ok "Tag pushed: $TAG"
 
+    # Delete existing release if present (allows re-running)
+    gh release delete "$TAG" --repo "$REPO" --yes 2>/dev/null || true
+
     gh release create "$TAG" \
         "$REPO_DIR/dist/$BINARY_NAME" \
         --repo "$REPO" \
         --title "Release $TAG" \
-        --notes "Release $TAG — hindsight-installer-linux-x86_64" \
-        --clobber
+        --notes "Release $TAG — hindsight-installer-linux-x86_64"
     ok "Release created with binary attached"
 }
 
