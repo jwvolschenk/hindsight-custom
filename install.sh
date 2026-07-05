@@ -975,24 +975,45 @@ mode_update() {
 
     install_core
 
-    # Re-deploy hermes plugin if installed
+    # Re-deploy each installed agent (all install functions are idempotent)
+    echo "[*] Re-deploying agent integrations ..."
+
+    # Hermes — check by plugin presence
     if [ -f "$HOME/.hermes/plugins/hindsight-custom/__init__.py" ]; then
-        cp "$SRC/integrations/hermes/__init__.py" "$HOME/.hermes/plugins/hindsight-custom/"
-        echo "  [✓] Hermes plugin updated"
+        install_hermes
     fi
 
-    # Re-deploy hooks if installed
-    if [ -f "$HOME/.claude/hooks/hindsight-recall.sh" ]; then
-        cp "$SRC/integrations/claude-code/hooks/recall.sh" "$HOME/.claude/hooks/hindsight-recall.sh"
-        cp "$SRC/integrations/claude-code/hooks/retain.sh" "$HOME/.claude/hooks/hindsight-retain.sh"
-        chmod +x "$HOME/.claude/hooks/"hindsight-*.sh
-        echo "  [✓] Claude Code hooks updated"
+    # Claude Code — check by hooks or settings.json
+    if [ -f "$HOME/.claude/hooks/hindsight-recall.sh" ] || \
+       ([ -f "$HOME/.claude/settings.json" ] && command -v python3 &>/dev/null && \
+        python3 -c "import json; d=json.load(open('$HOME/.claude/settings.json')); assert 'hindsight' in d.get('mcpServers',{})" 2>/dev/null); then
+        install_claude
     fi
+
+    # OpenCode — check by config entry (plugin or MCP)
+    local oc_cfg="$HOME/.config/opencode/opencode.jsonc"
+    [ -f "$oc_cfg" ] || oc_cfg="$HOME/.config/opencode/opencode.json"
+    if [ -f "$oc_cfg" ] && command -v python3 &>/dev/null && \
+       python3 -c "
+import json
+d=json.load(open('$oc_cfg'))
+has_plugin = any('hindsight' in str(p) for p in d.get('plugin', []))
+has_mcp = 'hindsight' in d.get('mcp', {})
+assert has_plugin or has_mcp
+" 2>/dev/null; then
+        install_opencode
+    fi
+
+    # Codex — check by hooks presence
     if [ -f "$HOME/.codex/hooks/hindsight-recall.py" ]; then
-        cp "$SRC/integrations/codex/hooks/recall.py" "$HOME/.codex/hooks/hindsight-recall.py"
-        cp "$SRC/integrations/codex/hooks/retain.py" "$HOME/.codex/hooks/hindsight-retain.py"
-        chmod +x "$HOME/.codex/hooks/"hindsight-*.py
-        echo "  [✓] Codex CLI hooks updated"
+        install_codex
+    fi
+
+    # Copilot — check by MCP config or plugin dir
+    if ([ -f "$HOME/.vscode/mcp.json" ] && command -v python3 &>/dev/null && \
+        python3 -c "import json; d=json.load(open('$HOME/.vscode/mcp.json')); assert 'hindsight' in d.get('servers',{})" 2>/dev/null) || \
+       [ -d "$CONFIG_DIR/copilot-plugin" ]; then
+        install_copilot
     fi
 
     echo ""
