@@ -162,8 +162,8 @@ sequenceDiagram
     Note over User,API: Agent responds
     Agent->>Hooks: Stop
     Hooks->>Core: retain(exchange)
+    Core-->>Hooks: queued (fire-and-forget)
     Core->>API: retain(bank="credo_main", content=...)
-    API-->>Core: stored
 ```
 
 ## Quick Install
@@ -247,7 +247,7 @@ stdio transport. It exposes five tools:
 
 | Tool | Description |
 |------|-------------|
-| `hindsight_retain` | Store a memory (auto-routes to project bank) |
+| `hindsight_retain` | Store a memory (fire-and-forget, auto-routes to project bank) |
 | `hindsight_recall` | Search memories (project + system banks) |
 | `hindsight_reflect` | Reason across all memories for a coherent answer |
 | `hindsight_project` | Show or override the active project |

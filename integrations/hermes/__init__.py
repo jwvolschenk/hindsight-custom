@@ -48,7 +48,8 @@ _RETAIN_SCHEMA = {
     "description": (
         "Store information to long-term memory. Hindsight automatically "
         "extracts structured facts, resolves entities, and indexes for retrieval. "
-        "Memories are stored in the current project's bank automatically."
+        "Memories are stored in the current project's bank automatically. "
+        "Returns immediately — the store is fire-and-forget."
     ),
     "parameters": {
         "type": "object",
@@ -56,7 +57,6 @@ _RETAIN_SCHEMA = {
             "content": {"type": "string", "description": "The information to store."},
             "context": {"type": "string", "description": "Short label (e.g. 'user preference', 'project decision')."},
             "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional tags."},
-            "bank": {"type": "string", "description": "Override bank (default: auto-detected from project). Use 'system' for cross-project knowledge."},
             "entities": {
                 "type": "array",
                 "items": {
@@ -376,7 +376,7 @@ class HindsightProjectProvider(MemoryProvider):
 
         if tool_name == "hindsight_retain":
             return json.dumps(self._client.retain(
-                content=args.get("content", ""), bank=args.get("bank", ""),
+                content=args.get("content", ""),
                 context=args.get("context"), tags=args.get("tags"),
                 entities=self._merge_entities(args.get("entities")),
             ))

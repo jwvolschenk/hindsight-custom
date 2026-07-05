@@ -14,6 +14,7 @@ export interface HindsightConfig {
     budget: string;
     searchShared: boolean;
     recallMaxTokens: number;
+    timeout: number; // seconds
 }
 
 export interface RecallResult {
@@ -35,11 +36,13 @@ export class HindsightClient {
     private apiUrl: string;
     private apiKey: string;
     private budget: string;
+    private timeoutMs: number;
 
     constructor(config: HindsightConfig) {
         this.apiUrl = config.apiUrl.replace(/\/$/, "");
         this.apiKey = config.apiKey;
         this.budget = config.budget || "mid";
+        this.timeoutMs = (config.timeout || 300) * 1000;
     }
 
     async retain(bankId: string, content: string, options?: {
@@ -86,21 +89,35 @@ export class HindsightClient {
     }
 
     private async get(path: string): Promise<unknown> {
-        const resp = await fetch(`${this.apiUrl}${path}`, {
-            headers: this.headers(),
-        });
-        if (!resp.ok) throw new Error(`GET ${path}: ${resp.status}`);
-        return resp.json();
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+        try {
+            const resp = await fetch(`${this.apiUrl}${path}`, {
+                headers: this.headers(),
+                signal: controller.signal,
+            });
+            if (!resp.ok) throw new Error(`GET ${path}: ${resp.status}`);
+            return resp.json();
+        } finally {
+            clearTimeout(timer);
+        }
     }
 
     private async post(path: string, body: unknown): Promise<unknown> {
-        const resp = await fetch(`${this.apiUrl}${path}`, {
-            method: "POST",
-            headers: { ...this.headers(), "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-        });
-        if (!resp.ok) throw new Error(`POST ${path}: ${resp.status}`);
-        return resp.json();
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+        try {
+            const resp = await fetch(`${this.apiUrl}${path}`, {
+                method: "POST",
+                headers: { ...this.headers(), "Content-Type": "application/json" },
+                body: JSON.stringify(body),
+                signal: controller.signal,
+            });
+            if (!resp.ok) throw new Error(`POST ${path}: ${resp.status}`);
+            return resp.json();
+        } finally {
+            clearTimeout(timer);
+        }
     }
 
     private headers(): Record<string, string> {

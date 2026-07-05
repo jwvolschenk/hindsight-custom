@@ -29,6 +29,7 @@ interface PluginConfig {
     searchShared: boolean;
     retainContext: string;
     recallMaxTokens: number;
+    timeout: number; // seconds
 }
 
 function loadConfig(): PluginConfig {
@@ -37,6 +38,7 @@ function loadConfig(): PluginConfig {
     let fileApiKey: string | undefined;
     let fileBudget: string | undefined;
     let fileSearchShared: boolean | undefined;
+    let fileTimeout: number | undefined;
 
     try {
         const configPath = join(homedir(), ".config", "hindsight-custom", "config.json");
@@ -45,6 +47,7 @@ function loadConfig(): PluginConfig {
         fileApiKey = raw.apiKey;
         fileBudget = raw.budget;
         fileSearchShared = raw.search_shared;
+        fileTimeout = raw.timeout;
     } catch {
         // Config file not found — fall through to defaults
     }
@@ -56,6 +59,7 @@ function loadConfig(): PluginConfig {
         searchShared: process.env.HINDSIGHT_SEARCH_SHARED !== "false" && (fileSearchShared !== false),
         retainContext: process.env.HINDSIGHT_RETAIN_CONTEXT || "opencode session",
         recallMaxTokens: parseInt(process.env.HINDSIGHT_RECALL_MAX_TOKENS || "4096", 10),
+        timeout: parseInt(process.env.HINDSIGHT_TIMEOUT || String(fileTimeout || 300), 10),
     };
 }
 
@@ -77,18 +81,18 @@ const HindsightPlugin: Plugin = async (input, _options) => {
         description:
             "Store information in long-term memory. Use this to remember important facts, " +
             "user preferences, project context, decisions, and anything worth recalling in " +
-            "future sessions. Memories are automatically routed to the current project's bank.",
+            "future sessions. Memories are automatically routed to the current project's bank. " +
+            "Returns immediately — the store is fire-and-forget.",
         args: {
             content: tool.schema.string().describe("The information to remember."),
             context: tool.schema.string().optional().describe("Short label (e.g. 'project decision')."),
-            bank: tool.schema.string().optional().describe("Override bank (default: project bank). Use 'system' for cross-project."),
         },
         async execute(args) {
-            const bank = args.bank || projectBank;
-            await client.retain(bank, args.content, {
+            // Fire and forget — don't block the agent
+            client.retain(projectBank, args.content, {
                 context: args.context || config.retainContext,
-            });
-            return `Memory stored in bank '${bank}'.`;
+            }).catch(() => {});
+            return `Memory queued for bank '${projectBank}'.`;
         },
     });
 
@@ -191,14 +195,11 @@ const HindsightPlugin: Plugin = async (input, _options) => {
             // Auto-retain every 3 turns
             if (turnCount % 3 !== 0) return;
 
-            try {
-                await client.retain(projectBank, `Session activity: ${turnCount} turns completed`, {
-                    context: config.retainContext,
-                    tags: ["auto-retain", "opencode"],
-                });
-            } catch {
-                // Silent failure
-            }
+            // Fire and forget — don't block the session
+            client.retain(projectBank, `Session activity: ${turnCount} turns completed`, {
+                context: config.retainContext,
+                tags: ["auto-retain", "opencode"],
+            }).catch(() => {});
         },
     };
 };

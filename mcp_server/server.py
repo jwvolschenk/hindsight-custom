@@ -72,21 +72,18 @@ def hindsight_retain(
     content: str,
     context: str = "",
     tags: list[str] | None = None,
-    bank: str = "",
     entities: list[dict[str, str]] | None = None,
 ) -> str:
     """Store information in long-term memory.
 
     Hindsight automatically extracts structured facts, resolves entities,
     and indexes for retrieval. Memories are stored in the current project's
-    bank automatically.
+    bank automatically. Returns immediately — the store is fire-and-forget.
 
     Args:
         content: The information to store.
         context: Short label (e.g. 'user preference', 'project decision').
         tags: Optional tags for categorisation.
-        bank: Override bank (default: auto-detected from project).
-              Use 'system' for cross-project knowledge.
         entities: Optional list of entities to associate with this memory.
                   Each entity has 'text' (name) and 'type' (label, e.g. 'host', 'service').
                   Example: [{"text": "jwv-mint", "type": "host"}]
@@ -94,7 +91,6 @@ def hindsight_retain(
     client = _get_client()
     result = client.retain(
         content=content,
-        bank=bank,
         context=context or None,
         tags=tags,
         entities=entities,

@@ -80,7 +80,6 @@ class HindsightClient:
         self,
         content: str,
         *,
-        bank: str = "",
         context: str | None = None,
         tags: list[str] | None = None,
         entities: list[dict[str, str]] | None = None,
@@ -88,8 +87,13 @@ class HindsightClient:
         metadata: dict | None = None,
         retain_async: bool = True,
     ) -> dict:
-        """Store a memory in the specified bank (default: project bank)."""
-        target = bank or self._project_bank
+        """Store a memory in the project bank. Fire-and-forget — returns immediately.
+
+        The bank parameter is intentionally excluded: retain always routes to the
+        auto-detected project bank. Use hindsight_project to change the active
+        project, or hindsight_banks to manage banks explicitly.
+        """
+        target = self._project_bank
         item: Dict[str, Any] = {"content": content}
         if context:
             item["context"] = context
@@ -101,19 +105,18 @@ class HindsightClient:
             item["metadata"] = metadata
 
         try:
-            self._run_async(
+            self._fire_and_forget(
                 self._client.aretain_batch(
                     bank_id=target,
                     items=[item],
                     document_id=document_id,
                     retain_async=retain_async,
-                ),
-                timeout=self._config.timeout,
+                )
             )
-            return {"result": f"Memory stored in bank '{target}'."}
+            return {"result": f"Memory queued for bank '{target}'."}
         except Exception as e:
-            logger.warning("Retain failed: %s", e)
-            return {"error": f"Failed to store memory: {e}"}
+            logger.warning("Retain scheduling failed: %s", e)
+            return {"error": f"Failed to queue memory: {e}"}
 
     def recall(
         self,
@@ -294,6 +297,11 @@ class HindsightClient:
         loop = self._get_loop()
         future = asyncio.run_coroutine_threadsafe(coro, loop)
         return future.result(timeout=timeout)
+
+    def _fire_and_forget(self, coro):
+        """Schedule coro on the background loop without waiting for result."""
+        loop = self._get_loop()
+        asyncio.run_coroutine_threadsafe(coro, loop)
 
     def shutdown(self) -> None:
         """Clean up the event loop."""

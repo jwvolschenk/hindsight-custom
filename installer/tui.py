@@ -87,6 +87,24 @@ def _raw_api_key(raw: dict[str, object]) -> str:
     return str(value).strip() if value else ""
 
 
+def _opencode_installed(home: Path) -> bool:
+    """Check if hindsight is configured in OpenCode (plugin or MCP, .jsonc first)."""
+    for name in ("opencode.jsonc", "opencode.json"):
+        path = home / ".config" / "opencode" / name
+        if path.exists():
+            try:
+                data = json.loads(path.read_text())
+            except Exception:
+                continue
+            # Check plugin array (native integration)
+            if any("hindsight" in str(p) for p in data.get("plugin", [])):
+                return True
+            # Check mcp dict (MCP fallback)
+            if "hindsight" in data.get("mcp", {}):
+                return True
+    return False
+
+
 def _json_has(path: Path, top_key: str, child_key: str) -> bool:
     try:
         data = json.loads(path.read_text())
@@ -110,8 +128,10 @@ def detect_agents() -> list[AgentState]:
             available = (home / ".claude").exists() or bool(_which("claude"))
             installed = _json_has(home / ".claude/settings.json", "mcpServers", "hindsight")
         elif key == "opencode":
-            available = (home / ".config/opencode/opencode.json").exists() or bool(_which("opencode"))
-            installed = _json_has(home / ".config/opencode/opencode.json", "mcp", "hindsight")
+            oc_json = home / ".config/opencode/opencode.json"
+            oc_jsonc = home / ".config/opencode/opencode.jsonc"
+            available = oc_jsonc.exists() or oc_json.exists() or bool(_which("opencode"))
+            installed = _opencode_installed(home)
         elif key == "codex":
             available = (home / ".codex").exists() or bool(_which("codex"))
             installed = _codex_installed(home / ".codex/hooks.json")
