@@ -123,6 +123,10 @@ detect_agents() {
     if [ -d "$HOME/.hermes" ]; then
         if [ -f "$HOME/.hermes/plugins/hindsight-custom/__init__.py" ]; then
             AGENT_INSTALLED[hermes]=1
+        elif [ -f "$HOME/.hermes/config.yaml" ] && command -v python3 &>/dev/null && \
+           python3 -c "import yaml; d=yaml.safe_load(open('$HOME/.hermes/config.yaml')); assert 'hindsight' in d.get('mcp_servers',{})" 2>/dev/null; then
+            # MCP server registered but plugin dir missing
+            AGENT_INSTALLED[hermes]=1
         else
             AGENT_INSTALLED[hermes]=0
         fi
@@ -650,12 +654,203 @@ install_hermes() {
     if [ -f "$HOME/.hermes/config.yaml" ]; then
         backup "$HOME/.hermes/config.yaml"
         if grep -q "provider: hindsight-custom" "$HOME/.hermes/config.yaml"; then
-            echo "  [✓] Hermes — already active"
+            echo "  [✓] Hermes — plugin already active"
         elif grep -q "provider: hindsight" "$HOME/.hermes/config.yaml"; then
             sed -i 's/provider: hindsight$/provider: hindsight-custom/' "$HOME/.hermes/config.yaml"
-            echo "  [✓] Hermes — activated"
+            echo "  [✓] Hermes — plugin activated"
         fi
     fi
+
+    # Register MCP server in Hermes config for explicit tool access
+    register_hermes_mcp_server
+}
+
+# Register the hindsight MCP server in ~/.hermes/config.yaml
+register_hermes_mcp_server() {
+    local hermes_cfg="$HOME/.hermes/config.yaml"
+    local venv_python="$INSTALL_DIR/.venv/bin/python"
+    local lib_dir="$INSTALL_DIR"
+
+    # Resolve to absolute paths
+    venv_python="$(eval echo "$venv_python")"
+    lib_dir="$(eval echo "$lib_dir")"
+
+    # Verify the MCP server can start
+    if [ ! -f "$venv_python" ]; then
+        echo "  [!] MCP server venv python not found at $venv_python"
+        echo "      Skipping MCP server registration. Run update to retry."
+        return 1
+    fi
+
+    # Verify mcp package is installed
+    if ! "$venv_python" -c "from mcp.server.fastmcp import FastMCP; print('OK')" 2>/dev/null; then
+        echo "  [!] MCP package not installed in venv. Installing..."
+        if ! "$INSTALL_DIR/.venv/bin/pip" install --quiet mcp 2>/dev/null; then
+            echo "  [!] Failed to install mcp package. Skipping MCP server registration."
+            return 1
+        fi
+    fi
+
+    # Verify mcp_server module can be imported
+    if ! (cd "$lib_dir" && "$venv_python" -c "from mcp_server.server import main; print('OK')" 2>/dev/null); then
+        echo "  [!] MCP server module import failed. Skipping MCP server registration."
+        return 1
+    fi
+
+    # Create hermes config if it doesn't exist
+    if [ ! -f "$hermes_cfg" ]; then
+        mkdir -p "$(dirname "$hermes_cfg")"
+        cat > "$hermes_cfg" <<EOF
+# Hermes Agent Configuration
+mcp_servers:
+  hindsight:
+    command: $venv_python
+    args:
+      - -m
+      - mcp_server
+    env:
+      PYTHONPATH: $lib_dir
+    timeout: 120
+    connect_timeout: 30
+EOF
+        echo "  [✓] Hermes — MCP server registered (new config)"
+        return 0
+    fi
+
+    # Config exists — use Python to safely update YAML
+    backup "$hermes_cfg"
+    python3 << PYEOF
+import sys
+
+config_path = "$hermes_cfg"
+venv_python = "$venv_python"
+lib_dir = "$lib_dir"
+
+# Read existing config
+with open(config_path, 'r') as f:
+    content = f.read()
+
+# Check if hindsight MCP server is already configured correctly
+if f"command: {venv_python}" in content and "mcp_server" in content:
+    print("  [✓] Hermes — MCP server already configured")
+    sys.exit(0)
+
+# Try to use PyYAML if available
+try:
+    import yaml
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f) or {}
+
+    if 'mcp_servers' not in config:
+        config['mcp_servers'] = {}
+
+    config['mcp_servers']['hindsight'] = {
+        'command': venv_python,
+        'args': ['-m', 'mcp_server'],
+        'env': {'PYTHONPATH': lib_dir},
+        'timeout': 120,
+        'connect_timeout': 30,
+    }
+
+    with open(config_path, 'w') as f:
+        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+
+    print("  [✓] Hermes — MCP server registered (PyYAML)")
+    sys.exit(0)
+
+except ImportError:
+    pass
+
+# Fallback: text-based YAML manipulation
+lines = content.split('\n')
+
+# Find or create mcp_servers section
+mcp_servers_idx = None
+hindsight_idx = None
+indent_level = 0
+
+for i, line in enumerate(lines):
+    stripped = line.lstrip()
+    if stripped.startswith('mcp_servers:'):
+        mcp_servers_idx = i
+        indent_level = len(line) - len(stripped)
+    elif mcp_servers_idx is not None and stripped.startswith('hindsight:'):
+        # Check if this is under mcp_servers (same or deeper indent)
+        line_indent = len(line) - len(stripped)
+        if line_indent > indent_level:
+            hindsight_idx = i
+            break
+        else:
+            # Not under mcp_servers, reset
+            mcp_servers_idx = None
+
+# Build the hindsight config block
+hindsight_block = [
+    ' ' * (indent_level + 2) + 'hindsight:',
+    ' ' * (indent_level + 4) + f'command: {venv_python}',
+    ' ' * (indent_level + 4) + 'args:',
+    ' ' * (indent_level + 6) + '- -m',
+    ' ' * (indent_level + 6) + '- mcp_server',
+    ' ' * (indent_level + 4) + 'env:',
+    ' ' * (indent_level + 6) + f'PYTHONPATH: {lib_dir}',
+    ' ' * (indent_level + 4) + 'timeout: 120',
+    ' ' * (indent_level + 4) + 'connect_timeout: 30',
+]
+
+if hindsight_idx is not None:
+    # Replace existing hindsight block
+    # Find the end of the hindsight block (next key at same indent or mcp_servers indent)
+    end_idx = hindsight_idx + 1
+    while end_idx < len(lines):
+        line = lines[end_idx]
+        if line.strip() == '':
+            end_idx += 1
+            continue
+        line_indent = len(line) - len(line.lstrip())
+        if line_indent <= indent_level + 2 and line.strip():
+            break
+        end_idx += 1
+    lines[hindsight_idx:end_idx] = hindsight_block
+    print("  [✓] Hermes — MCP server updated")
+elif mcp_servers_idx is not None:
+    # Add hindsight under existing mcp_servers
+    # Find the end of mcp_servers section
+    insert_idx = mcp_servers_idx + 1
+    while insert_idx < len(lines):
+        line = lines[insert_idx]
+        if line.strip() == '':
+            insert_idx += 1
+            continue
+        line_indent = len(line) - len(line.lstrip())
+        if line_indent <= indent_level:
+            break
+        insert_idx += 1
+    # Insert before the next top-level section
+    for i, block_line in enumerate(hindsight_block):
+        lines.insert(insert_idx + i, block_line)
+    print("  [✓] Hermes — MCP server registered")
+else:
+    # No mcp_servers section — add it at the top level
+    # Find a good insertion point (after last top-level section or at end)
+    insert_idx = len(lines)
+    # Remove trailing empty lines
+    while insert_idx > 0 and lines[insert_idx - 1].strip() == '':
+        insert_idx -= 1
+
+    mcp_header = 'mcp_servers:'
+    lines.insert(insert_idx, '')
+    insert_idx += 1
+    lines.insert(insert_idx, mcp_header)
+    insert_idx += 1
+    for i, block_line in enumerate(hindsight_block):
+        lines.insert(insert_idx + i, block_line)
+    print("  [✓] Hermes — MCP server registered (new section)")
+
+with open(config_path, 'w') as f:
+    f.write('\n'.join(lines))
+    if not lines[-1].endswith('\n'):
+        f.write('\n')
+PYEOF
 }
 
 install_claude() {
@@ -835,7 +1030,85 @@ uninstall_hermes() {
         backup "$HOME/.hermes/config.yaml"
         sed -i 's/provider: hindsight-custom/provider: hindsight/' "$HOME/.hermes/config.yaml" 2>/dev/null || true
     fi
+    # Remove MCP server entry from hermes config
+    remove_hermes_mcp_server
     echo "  [x] Hermes"
+}
+
+# Remove the hindsight MCP server entry from ~/.hermes/config.yaml
+remove_hermes_mcp_server() {
+    local hermes_cfg="$HOME/.hermes/config.yaml"
+    [ ! -f "$hermes_cfg" ] && return 0
+    grep -q "hindsight" "$hermes_cfg" 2>/dev/null || return 0
+
+    python3 << PYEOF
+import sys
+
+config_path = "$hermes_cfg"
+
+try:
+    import yaml
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f) or {}
+
+    if 'mcp_servers' in config and 'hindsight' in config['mcp_servers']:
+        del config['mcp_servers']['hindsight']
+        if not config['mcp_servers']:
+            del config['mcp_servers']
+        with open(config_path, 'w') as f:
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+        print("  [~] Hermes - MCP server entry removed")
+    sys.exit(0)
+except ImportError:
+    pass
+
+# Fallback: text-based removal
+with open(config_path, 'r') as f:
+    lines = f.readlines()
+
+new_lines = []
+skip_until_next_key = False
+mcp_servers_indent = -1
+
+for line in lines:
+    stripped = line.lstrip()
+    indent = len(line) - len(stripped)
+
+    # Detect mcp_servers section
+    if stripped.startswith('mcp_servers:') and not skip_until_next_key:
+        mcp_servers_indent = indent
+        # Check if hindsight is the only entry
+        has_other = False
+        for future_line in lines[lines.index(line) + 1:]:
+            future_stripped = future_line.lstrip()
+            future_indent = len(future_line) - len(future_stripped)
+            if future_indent <= mcp_servers_indent and future_stripped:
+                break
+            if future_stripped and not future_stripped.startswith('hindsight:') and future_indent == mcp_servers_indent + 2:
+                has_other = True
+        if not has_other:
+            skip_until_next_key = True
+            continue
+        new_lines.append(line)
+        continue
+
+    # Skip hindsight block under mcp_servers
+    if mcp_servers_indent >= 0 and stripped.startswith('hindsight:') and indent == mcp_servers_indent + 2:
+        skip_until_next_key = True
+        continue
+
+    if skip_until_next_key:
+        if indent <= mcp_servers_indent and stripped:
+            skip_until_next_key = False
+            mcp_servers_indent = -1
+            new_lines.append(line)
+        continue
+
+    new_lines.append(line)
+
+with open(config_path, 'w') as f:
+    f.writelines(new_lines)
+PYEOF
 }
 
 uninstall_claude() {
@@ -975,8 +1248,10 @@ mode_update() {
     # Re-deploy each installed agent (all install functions are idempotent)
     echo "[*] Re-deploying agent integrations ..."
 
-    # Hermes — check by plugin presence
-    if [ -f "$HOME/.hermes/plugins/hindsight-custom/__init__.py" ]; then
+    # Hermes — check by plugin presence or MCP server config
+    if [ -f "$HOME/.hermes/plugins/hindsight-custom/__init__.py" ] || \
+       ([ -f "$HOME/.hermes/config.yaml" ] && command -v python3 &>/dev/null && \
+        python3 -c "import yaml; d=yaml.safe_load(open('$HOME/.hermes/config.yaml')); assert 'hindsight' in d.get('mcp_servers',{})" 2>/dev/null); then
         install_hermes
     fi
 
