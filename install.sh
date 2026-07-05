@@ -138,9 +138,8 @@ detect_agents() {
         fi
     fi
 
-    # OpenCode — check opencode.jsonc or opencode.json for hindsight plugin or MCP
+    # OpenCode — check opencode.jsonc for hindsight plugin or MCP
     local oc_cfg="$HOME/.config/opencode/opencode.jsonc"
-    [ -f "$oc_cfg" ] || oc_cfg="$HOME/.config/opencode/opencode.json"
     if command -v opencode &>/dev/null || [ -f "$oc_cfg" ]; then
         if [ -f "$oc_cfg" ] && command -v python3 &>/dev/null && \
            python3 -c "
@@ -695,9 +694,8 @@ with open('$settings','w') as f: json.dump(cfg,f,indent=2); f.write('\n')
 }
 
 install_opencode() {
-    # Prefer opencode.jsonc (OpenCode reads it over .json)
+    # OpenCode uses opencode.jsonc
     local cfg="$HOME/.config/opencode/opencode.jsonc"
-    [ -f "$cfg" ] || cfg="$HOME/.config/opencode/opencode.json"
     backup "$cfg"
 
     # Build native plugin (provides hooks for auto-inject/auto-retain)
@@ -733,7 +731,7 @@ else:
 with open('$cfg','w') as f: json.dump(d,f,indent=2); f.write('\n')
 "
     else
-        cfg="$HOME/.config/opencode/opencode.json"
+        cfg="$HOME/.config/opencode/opencode.jsonc"
         mkdir -p "$(dirname "$cfg")"
         if $plugin_built; then
             echo "{\"plugin\":[\"file:$plugin_dir\"]}" > "$cfg"
@@ -859,7 +857,6 @@ with open(p,'w') as f: json.dump(d,f,indent=2); f.write('\n')
 
 uninstall_opencode() {
     local cfg="$HOME/.config/opencode/opencode.jsonc"
-    [ -f "$cfg" ] || cfg="$HOME/.config/opencode/opencode.json"
     if [ -f "$cfg" ] && command -v python3 &>/dev/null; then
         backup "$cfg"
         python3 -c "
@@ -992,7 +989,6 @@ mode_update() {
 
     # OpenCode — check by config entry (plugin or MCP)
     local oc_cfg="$HOME/.config/opencode/opencode.jsonc"
-    [ -f "$oc_cfg" ] || oc_cfg="$HOME/.config/opencode/opencode.json"
     if [ -f "$oc_cfg" ] && command -v python3 &>/dev/null && \
        python3 -c "
 import json
