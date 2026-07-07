@@ -1,12 +1,12 @@
 # GitHub Copilot Integration for Hindsight Project Memory
 
-Adds project-aware Hindsight memory to [GitHub Copilot](https://github.com/features/copilot) in VS Code agent mode via MCP server.
+Adds project-aware Hindsight memory to [GitHub Copilot](https://github.com/features/copilot) via MCP server. Works with both Copilot in VS Code (agent mode) and Copilot CLI.
 
 ## How it works
 
-1. **MCP server** provides retain/recall/reflect/tools via VS Code's MCP support
+1. **MCP server** provides retain/recall/reflect tools via MCP
 2. **Copilot instructions** guide the agent to use memory tools appropriately
-3. VS Code connects to the MCP server automatically when Copilot agent mode is active
+3. Copilot connects to the MCP server automatically
 
 ## Install
 
@@ -22,14 +22,26 @@ Or install just Copilot integration:
 
 ## What gets installed
 
-- `.vscode/mcp.json` in your home directory — MCP server config
+- `~/.vscode/mcp.json` — MCP server config for Copilot in VS Code
+- `~/.copilot/mcp-config.json` — MCP server config for Copilot CLI (updated if exists)
 - `.github/copilot-instructions.md` — memory usage rules (merged with existing)
+
+## Config locations
+
+Copilot has two separate MCP config files:
+
+| File | Used by | Key format |
+|------|---------|------------|
+| `~/.vscode/mcp.json` | Copilot in VS Code agent mode | `servers` |
+| `~/.copilot/mcp-config.json` | Copilot CLI | `mcpServers` |
+
+The installer updates both files when they exist.
 
 ## Manual setup
 
 ### 1. MCP server config
 
-Add to `~/.vscode/mcp.json` (global) or `.vscode/mcp.json` (per-project):
+**VS Code** — add to `~/.vscode/mcp.json`:
 
 ```json
 {
@@ -47,8 +59,23 @@ Add to `~/.vscode/mcp.json` (global) or `.vscode/mcp.json` (per-project):
 }
 ```
 
-If you have a native Hindsight MCP configured in `~/.copilot/mcp-config.json`,
-the installer will also update that file to point to the project-aware MCP server.
+**Copilot CLI** — add to `~/.copilot/mcp-config.json`:
+
+```json
+{
+  "mcpServers": {
+    "hindsight": {
+      "command": "python3",
+      "args": ["-m", "mcp_server"],
+      "cwd": "/path/to/hindsight-custom",
+      "env": {
+        "HINDSIGHT_API_KEY": "your-key",
+        "HINDSIGHT_API_URL": "https://your-hindsight-server.com"
+      }
+    }
+  }
+}
+```
 
 ### 2. Copilot instructions
 

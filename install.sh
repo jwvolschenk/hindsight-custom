@@ -1012,7 +1012,7 @@ with open('$mcp','w') as f: json.dump(d,f,indent=2); f.write('\n')
     fi
 
     # Copilot MCP config (~/.copilot/mcp-config.json)
-    # Copilot reads this separate config for MCP servers. Replace the native
+    # Copilot CLI reads this separate config for MCP servers. Replace the native
     # Hindsight HTTP endpoint with our project-aware stdio MCP server.
     local copilot_mcp="$HOME/.copilot/mcp-config.json"
     if [ -f "$copilot_mcp" ] && command -v python3 &>/dev/null; then
@@ -1023,6 +1023,10 @@ with open('$copilot_mcp') as f: d=json.load(f)
 d.setdefault('mcpServers',{})['hindsight']={'command':'$MCP_PYTHON','args':['-m','mcp_server'],'cwd':'$INSTALL_DIR'}
 with open('$copilot_mcp','w') as f: json.dump(d,f,indent=2); f.write('\n')
 " 2>/dev/null
+    elif [ -d "$HOME/.copilot" ]; then
+        # File doesn't exist yet but .copilot dir exists — create it
+        mkdir -p "$HOME/.copilot"
+        echo "{\"mcpServers\":{\"hindsight\":{\"command\":\"$MCP_PYTHON\",\"args\":[\"-m\",\"mcp_server\"],\"cwd\":\"$INSTALL_DIR\"}}}" > "$copilot_mcp"
     fi
 
     # Plugin manifest + hooks

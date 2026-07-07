@@ -1,5 +1,19 @@
 {
+  "_comment": "Copilot MCP config examples — copy the relevant section below",
+  "_vscode": "Use 'servers' key in ~/.vscode/mcp.json for VS Code agent mode",
+  "_cli": "Use 'mcpServers' key in ~/.copilot/mcp-config.json for Copilot CLI",
   "servers": {
+    "hindsight": {
+      "command": "python3",
+      "args": ["-m", "mcp_server"],
+      "cwd": "__REPO_ROOT__",
+      "env": {
+        "HINDSIGHT_API_KEY": "",
+        "HINDSIGHT_API_URL": "https://api.hindsight.vectorize.io"
+      }
+    }
+  },
+  "mcpServers": {
     "hindsight": {
       "command": "python3",
       "args": ["-m", "mcp_server"],
