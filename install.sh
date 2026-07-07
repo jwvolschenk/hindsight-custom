@@ -178,10 +178,12 @@ assert found
         fi
     fi
 
-    # Copilot — check .vscode/mcp.json for hindsight
-    if [ -d "$HOME/.vscode" ] || command -v code &>/dev/null; then
-        if [ -f "$HOME/.vscode/mcp.json" ] && command -v python3 &>/dev/null && \
-           python3 -c "import json; d=json.load(open('$HOME/.vscode/mcp.json')); assert 'hindsight' in d.get('servers',{})" 2>/dev/null; then
+    # Copilot — check ~/.vscode/mcp.json or ~/.copilot/mcp-config.json for hindsight
+    if [ -d "$HOME/.vscode" ] || command -v code &>/dev/null || [ -d "$HOME/.copilot" ]; then
+        if ([ -f "$HOME/.vscode/mcp.json" ] && command -v python3 &>/dev/null && \
+           python3 -c "import json; d=json.load(open('$HOME/.vscode/mcp.json')); assert 'hindsight' in d.get('servers',{})" 2>/dev/null) || \
+           ([ -f "$HOME/.copilot/mcp-config.json" ] && command -v python3 &>/dev/null && \
+           python3 -c "import json; d=json.load(open('$HOME/.copilot/mcp-config.json')); assert 'hindsight' in d.get('mcpServers',{})" 2>/dev/null); then
             AGENT_INSTALLED[copilot]=1
         else
             AGENT_INSTALLED[copilot]=0
@@ -1009,6 +1011,20 @@ with open('$mcp','w') as f: json.dump(d,f,indent=2); f.write('\n')
         echo "{\"servers\":{\"hindsight\":{\"command\":\"$MCP_PYTHON\",\"args\":[\"-m\",\"mcp_server\"],\"cwd\":\"$INSTALL_DIR\"}}}" > "$mcp"
     fi
 
+    # Copilot MCP config (~/.copilot/mcp-config.json)
+    # Copilot reads this separate config for MCP servers. Replace the native
+    # Hindsight HTTP endpoint with our project-aware stdio MCP server.
+    local copilot_mcp="$HOME/.copilot/mcp-config.json"
+    if [ -f "$copilot_mcp" ] && command -v python3 &>/dev/null; then
+        backup "$copilot_mcp"
+        python3 -c "
+import json
+with open('$copilot_mcp') as f: d=json.load(f)
+d.setdefault('mcpServers',{})['hindsight']={'command':'$MCP_PYTHON','args':['-m','mcp_server'],'cwd':'$INSTALL_DIR'}
+with open('$copilot_mcp','w') as f: json.dump(d,f,indent=2); f.write('\n')
+" 2>/dev/null
+    fi
+
     # Plugin manifest + hooks
     local plugin_dir="$CONFIG_DIR/copilot-plugin"
     mkdir -p "$plugin_dir/.claude-plugin"
@@ -1191,6 +1207,16 @@ if 'servers' in d and not d['servers']: del d['servers']
 if d:
     with open(p,'w') as f: json.dump(d,f,indent=2); f.write('\n')
 else: os.remove(p)
+" 2>/dev/null || true
+    fi
+    if [ -f "$HOME/.copilot/mcp-config.json" ] && command -v python3 &>/dev/null; then
+        backup "$HOME/.copilot/mcp-config.json"
+        python3 -c "
+import json
+p='$HOME/.copilot/mcp-config.json'
+with open(p) as f: d=json.load(f)
+d.get('mcpServers',{}).pop('hindsight',None)
+with open(p,'w') as f: json.dump(d,f,indent=2); f.write('\n')
 " 2>/dev/null || true
     fi
     strip_section "$HOME/.github/copilot-instructions.md"

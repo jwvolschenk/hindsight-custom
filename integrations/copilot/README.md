@@ -47,6 +47,9 @@ Add to `~/.vscode/mcp.json` (global) or `.vscode/mcp.json` (per-project):
 }
 ```
 
+If you have a native Hindsight MCP configured in `~/.copilot/mcp-config.json`,
+the installer will also update that file to point to the project-aware MCP server.
+
 ### 2. Copilot instructions
 
 Add to `.github/copilot-instructions.md` in your project or home directory:

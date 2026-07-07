@@ -42,6 +42,7 @@ class Config:
     recall_max_tokens: int = 4096
     recall_types: List[str] = field(default_factory=lambda: ["observation"])
     recall_max_input_chars: int = 800
+    recall_deduplicate: bool = True
 
     @property
     def is_configured(self) -> bool:
@@ -86,6 +87,7 @@ def load_config(path: Optional[Path] = None) -> Config:
         recall_max_tokens=int(raw.get("recall_max_tokens", 4096)),
         recall_types=raw.get("recall_types", ["observation"]),
         recall_max_input_chars=int(raw.get("recall_max_input_chars", 800)),
+        recall_deduplicate=raw.get("recall_deduplicate", True),
     )
     return cfg
 

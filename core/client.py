@@ -14,6 +14,8 @@ import logging
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import re as _re
+from difflib import SequenceMatcher
 
 from core.config import Config
 from core.project import SHARED_BANK, detect_project, resolve_working_dir
@@ -146,7 +148,11 @@ class HindsightClient:
                         results.append(f"[Shared]\n{resp}")
 
             if results:
-                return {"result": "\n\n".join(results)}
+                combined = "\n\n".join(results)
+                # Cross-bank deduplication: remove duplicate bullets across banks
+                if self._config.recall_deduplicate and len(results) > 1:
+                    combined = self._deduplicate_cross_bank(combined)
+                return {"result": combined}
             return {"result": "No relevant memories found."}
         except Exception as e:
             logger.warning("Recall failed: %s", e)
@@ -255,6 +261,84 @@ class HindsightClient:
             except Exception as e:
                 logger.debug("Bank %s creation note: %s", bank_id, e)
 
+    @staticmethod
+    def _normalise(text: str) -> str:
+        """Normalise text for deduplication comparison."""
+        t = text.lower().strip()
+        t = _re.sub(r"\s+", " ", t)
+        t = _re.sub(r"[|.,;:!?]+$", "", t).strip()
+        return t
+
+    @staticmethod
+    def _deduplicate_texts(texts: List[str], threshold: float = 0.85) -> List[str]:
+        """Remove near-duplicate strings, keeping the longest variant."""
+        if len(texts) <= 1:
+            return texts
+        seen: List[str] = []
+        seen_norm: List[str] = []
+        for text in texts:
+            norm = HindsightClient._normalise(text)
+            if not norm:
+                continue
+            is_dup = False
+            for i, existing_norm in enumerate(seen_norm):
+                ratio = SequenceMatcher(None, norm, existing_norm).ratio()
+                if ratio >= threshold:
+                    # Keep the longer / more detailed version
+                    if len(norm) > len(existing_norm):
+                        seen[i] = text
+                        seen_norm[i] = norm
+                    is_dup = True
+                    break
+            if not is_dup:
+                seen.append(text)
+                seen_norm.append(norm)
+        return seen
+
+    @staticmethod
+    def _deduplicate_cross_bank(combined: str) -> str:
+        """Remove duplicate bullets across [Project] and [Shared] sections.
+
+        Preserves section headers while deduplicating content lines.
+        """
+        lines = combined.split("\n")
+        sections: List[List[str]] = []
+        current: List[str] = []
+        for line in lines:
+            if line.startswith("[Project:") or line.startswith("[Shared]"):
+                if current:
+                    sections.append(current)
+                current = [line]
+            else:
+                current.append(line)
+        if current:
+            sections.append(current)
+
+        # Track seen normalised bullets across sections
+        seen_norms: Dict[str, int] = {}  # norm -> section index where first seen
+        for si, section in enumerate(sections):
+            lines_to_remove: set = set()
+            for li, line in enumerate(section):
+                if line.startswith("- "):
+                    text = line[2:]
+                    norm = HindsightClient._normalise(text)
+                    if norm in seen_norms:
+                        lines_to_remove.add(li)
+                    else:
+                        seen_norms[norm] = si
+            if lines_to_remove:
+                sections[si] = [
+                    l for i, l in enumerate(section) if i not in lines_to_remove
+                ]
+
+        # Reassemble, dropping empty sections
+        result_parts = []
+        for section in sections:
+            bullets = [l for l in section if l.startswith("- ")]
+            if bullets:
+                result_parts.append("\n".join(section))
+        return "\n\n".join(result_parts)
+
     def _call_recall(self, bank_id: str, query: str) -> str:
         """Call recall on a bank and return formatted results."""
         try:
@@ -268,7 +352,10 @@ class HindsightClient:
                 timeout=self._config.timeout,
             )
             if resp.results:
-                return "\n".join(f"- {r.text}" for r in resp.results if r.text)
+                texts = [r.text for r in resp.results if r.text]
+                if self._config.recall_deduplicate:
+                    texts = self._deduplicate_texts(texts)
+                return "\n".join(f"- {t}" for t in texts)
         except Exception as e:
             logger.debug("Recall failed for bank %s: %s", bank_id, e)
         return ""

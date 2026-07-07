@@ -27,13 +27,18 @@ from typing import Any, Dict, List, Optional
 from agent.memory_provider import MemoryProvider
 
 # ── Core library ────────────────────────────────────────────────────────────
-# Find the installed core library (same code the MCP server uses)
-_INSTALL_DIR = os.path.join(
-    os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
-    "hindsight-custom", "lib"
-)
-if os.path.isdir(_INSTALL_DIR) and _INSTALL_DIR not in sys.path:
-    sys.path.insert(0, _INSTALL_DIR)
+# Use the repo's core library directly (not the installed copy)
+_REPO_DIR = os.path.expanduser("~/repos/hindsight-custom")
+if os.path.isdir(os.path.join(_REPO_DIR, "core")) and _REPO_DIR not in sys.path:
+    sys.path.insert(0, _REPO_DIR)
+else:
+    # Fallback to installed copy if repo not found
+    _INSTALL_DIR = os.path.join(
+        os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
+        "hindsight-custom", "lib"
+    )
+    if os.path.isdir(_INSTALL_DIR) and _INSTALL_DIR not in sys.path:
+        sys.path.insert(0, _INSTALL_DIR)
 
 from core.client import HindsightClient
 from core.config import load_config
