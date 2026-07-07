@@ -95,7 +95,7 @@ def hindsight_retain(
         tags=tags,
         entities=entities,
     )
-    return json.dumps(result)
+    return result.get("result", result.get("error", "Memory queued."))
 
 
 @mcp.tool()
@@ -103,11 +103,11 @@ def hindsight_recall(
     query: str,
     bank: str = "",
 ) -> str:
-    """Search long-term memory.
+    """Quick mental check for relevant prior context.
 
-    Returns memories ranked by relevance using semantic search, keyword
-    matching, entity graph traversal, and reranking. Searches both the
-    current project bank and the shared system bank by default.
+    Returns a concise hint about what you previously learned in this area.
+    Use this to guide your research (reading files, exploring code), not as
+    the final answer. Searches both the project bank and shared system bank.
 
     Args:
         query: What to search for.
@@ -115,7 +115,7 @@ def hindsight_recall(
     """
     client = _get_client()
     result = client.recall(query=query, bank=bank)
-    return json.dumps(result)
+    return result.get("result", result.get("error", "No memories found."))
 
 
 @mcp.tool()
@@ -134,7 +134,7 @@ def hindsight_reflect(
     """
     client = _get_client()
     result = client.reflect(query=query, bank=bank)
-    return json.dumps(result)
+    return result.get("result", result.get("error", "No memories found."))
 
 
 @mcp.tool()
@@ -220,7 +220,24 @@ def get_project_info() -> str:
 
 
 def main():
-    """Run the MCP server on stdio transport."""
+    """Run the MCP server on stdio transport.
+
+    Supports --cwd <dir> to override the working directory for project
+    detection. This lets agent MCP configs pass the project directory
+    explicitly when the server process CWD isn't the project root.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Hindsight MCP server")
+    parser.add_argument(
+        "--cwd",
+        help="Working directory for project detection (overrides CWD and HINDSIGHT_CWD env var)",
+    )
+    args, _ = parser.parse_known_args()
+
+    if args.cwd:
+        os.environ["HINDSIGHT_CWD"] = args.cwd
+
     logging.basicConfig(
         level=logging.WARNING,
         format="%(name)s: %(message)s",

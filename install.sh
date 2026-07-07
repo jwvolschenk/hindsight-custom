@@ -518,7 +518,7 @@ fetch_source() {
     if ! $fetched; then
         mkdir -p "$TEMP_DIR/flat"
         for f in core/__init__.py core/project.py core/config.py core/client.py \
-                 mcp_server/__init__.py mcp_server/__main__.py mcp_server/server.py \
+                 mcp_server/__init__.py mcp_server/__main__.py mcp_server/server.py mcp_server/hindsight-mcp-launcher.sh \\
                  installer/__init__.py installer/tui.py \
                  integrations/hermes/__init__.py integrations/hermes/config.example.json \
                  integrations/claude-code/.claude-plugin/plugin.json \
@@ -609,6 +609,10 @@ install_core() {
     cp "$SRC/mcp_server/__init__.py" "$INSTALL_DIR/mcp_server/"
     cp "$SRC/mcp_server/__main__.py" "$INSTALL_DIR/mcp_server/"
     cp "$SRC/mcp_server/server.py" "$INSTALL_DIR/mcp_server/"
+    if [ -f "$SRC/mcp_server/hindsight-mcp-launcher.sh" ]; then
+        cp "$SRC/mcp_server/hindsight-mcp-launcher.sh" "$INSTALL_DIR/"
+        chmod +x "$INSTALL_DIR/hindsight-mcp-launcher.sh"
+    fi
     echo "      $INSTALL_DIR"
 
     # Python deps — install into a self-contained venv
@@ -999,34 +1003,45 @@ EOF
 install_copilot() {
     local mcp="$HOME/.vscode/mcp.json"
     backup "$mcp"
+
+    # Install the MCP launcher script (optional, for VS Code if default CWD
+    # doesn't match the workspace). Passes --cwd to the MCP server.
+    if [ -f "$SRC/mcp_server/hindsight-mcp-launcher.sh" ]; then
+        cp "$SRC/mcp_server/hindsight-mcp-launcher.sh" "$INSTALL_DIR/hindsight-mcp-launcher.sh"
+        chmod +x "$INSTALL_DIR/hindsight-mcp-launcher.sh"
+    fi
+
+    # No explicit cwd — the process inherits the parent's CWD.
+    # Copilot CLI: inherits terminal CWD (the user's project dir).
+    # VS Code: inherits VS Code's default CWD (usually the workspace).
+    # PYTHONPATH ensures the mcp_server module is importable from any CWD.
+    # If VS Code CWD doesn't match workspace, swap command to the launcher script.
     if [ -f "$mcp" ] && command -v python3 &>/dev/null; then
         python3 -c "
 import json
 with open('$mcp') as f: d=json.load(f)
-d.setdefault('servers',{})['hindsight']={'command':'$MCP_PYTHON','args':['-m','mcp_server'],'cwd':'$INSTALL_DIR'}
+d.setdefault('servers',{})['hindsight']={'command':'$MCP_PYTHON','args':['-m','mcp_server'],'env':{'PYTHONPATH':'$INSTALL_DIR'}}
 with open('$mcp','w') as f: json.dump(d,f,indent=2); f.write('\n')
 " 2>/dev/null
     else
         mkdir -p "$HOME/.vscode"
-        echo "{\"servers\":{\"hindsight\":{\"command\":\"$MCP_PYTHON\",\"args\":[\"-m\",\"mcp_server\"],\"cwd\":\"$INSTALL_DIR\"}}}" > "$mcp"
+        echo "{\"servers\":{\"hindsight\":{\"command\":\"$MCP_PYTHON\",\"args\":[\"-m\",\"mcp_server\"],\"env\":{\"PYTHONPATH\":\"$INSTALL_DIR\"}}}}" > "$mcp"
     fi
 
     # Copilot MCP config (~/.copilot/mcp-config.json)
-    # Copilot CLI reads this separate config for MCP servers. Replace the native
-    # Hindsight HTTP endpoint with our project-aware stdio MCP server.
+    # No explicit cwd — inherits terminal CWD (the user's project dir).
     local copilot_mcp="$HOME/.copilot/mcp-config.json"
     if [ -f "$copilot_mcp" ] && command -v python3 &>/dev/null; then
         backup "$copilot_mcp"
         python3 -c "
 import json
 with open('$copilot_mcp') as f: d=json.load(f)
-d.setdefault('mcpServers',{})['hindsight']={'command':'$MCP_PYTHON','args':['-m','mcp_server'],'cwd':'$INSTALL_DIR'}
+d.setdefault('mcpServers',{})['hindsight']={'command':'$MCP_PYTHON','args':['-m','mcp_server'],'env':{'PYTHONPATH':'$INSTALL_DIR'}}
 with open('$copilot_mcp','w') as f: json.dump(d,f,indent=2); f.write('\n')
 " 2>/dev/null
     elif [ -d "$HOME/.copilot" ]; then
-        # File doesn't exist yet but .copilot dir exists — create it
         mkdir -p "$HOME/.copilot"
-        echo "{\"mcpServers\":{\"hindsight\":{\"command\":\"$MCP_PYTHON\",\"args\":[\"-m\",\"mcp_server\"],\"cwd\":\"$INSTALL_DIR\"}}}" > "$copilot_mcp"
+        echo "{\"mcpServers\":{\"hindsight\":{\"command\":\"$MCP_PYTHON\",\"args\":[\"-m\",\"mcp_server\"],\"env\":{\"PYTHONPATH\":\"$INSTALL_DIR\"}}}}" > "$copilot_mcp"
     fi
 
     # Plugin manifest + hooks

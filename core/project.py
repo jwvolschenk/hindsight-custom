@@ -4,6 +4,11 @@ Bank naming:
 - Inside a git repo → bank is the sanitised repo directory name (e.g. 'credo_main')
 - Inside $HOME git repo → falls through to 'system' (dotfiles repo)
 - Outside a git repo → 'system'
+
+Resolution order for working directory:
+1. HINDSIGHT_CWD env var (set by MCP config or agent hooks)
+2. cwd argument (if provided)
+3. os.getcwd()
 """
 
 from __future__ import annotations
@@ -15,7 +20,17 @@ SHARED_BANK = "system"
 
 
 def resolve_working_dir() -> Path:
-    """Get the current working directory."""
+    """Get the current working directory.
+
+    Checks HINDSIGHT_CWD env var first — this lets MCP server configs
+    pass the agent's project directory even when the server process
+    starts in a different directory (e.g. the install/lib dir).
+    """
+    env_cwd = os.environ.get("HINDSIGHT_CWD", "").strip()
+    if env_cwd:
+        p = Path(env_cwd).resolve()
+        if p.is_dir():
+            return p
     return Path(os.getcwd()).resolve()
 
 

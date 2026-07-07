@@ -4,15 +4,17 @@
 You have access to persistent long-term memory via Hindsight tools:
 
 - `hindsight_retain` — Store important information, decisions, and context
-- `hindsight_recall` — Search for relevant memories before answering
+- `hindsight_recall` — Quick mental check for relevant prior context
 - `hindsight_reflect` — Reason across all memories for complex questions
 - `hindsight_project` — Show or change the active project context
 - `hindsight_banks` — List and manage memory banks
 
 ### When to use memory
 
-1. **At conversation start**: Call `hindsight_recall` with a summary of what
-   you're about to work on to check for relevant prior context.
+1. **Before starting work**: Call `hindsight_recall` with a short query about
+   what you're about to do. Treat the response as a quick hint — it tells you
+   what you previously learned about this area. Use it to guide your actual
+   research (reading files, exploring code), not as the final answer.
 2. **When learning something important**: Call `hindsight_retain` to store:
    - Architectural decisions and their rationale
    - User preferences and coding conventions

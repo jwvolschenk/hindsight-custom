@@ -152,6 +152,10 @@ class HindsightClient:
                 # Cross-bank deduplication: remove duplicate bullets across banks
                 if self._config.recall_deduplicate and len(results) > 1:
                     combined = self._deduplicate_cross_bank(combined)
+                # Hard cap: truncate to recall_max_tokens (approx 4 chars/token)
+                max_chars = self._config.recall_max_tokens * 4
+                if max_chars and len(combined) > max_chars:
+                    combined = combined[:max_chars].rsplit("\n", 1)[0] + "\n[...truncated]"
                 return {"result": combined}
             return {"result": "No relevant memories found."}
         except Exception as e:
