@@ -1,0 +1,8 @@
+# Force LF line endings for shell scripts — prevents Windows editors/Git from
+# converting \ line continuations to \r\n or doubling backslashes.
+*.sh    text eol=lf
+*.bash  text eol=lf
+*.py    text eol=lf
+*.ts    text eol=lf
+*.json  text eol=lf
+*.jsonc text eol=lf

@@ -10,6 +10,22 @@
 #   ./install.sh install --agents codex,claude-code
 #   ./install.sh --legacy              # force shell UI
 #
+
+# ── CRLF self-heal: if downloaded on Windows, strip \r and re-exec ────────
+# When run as ./install.sh, $0 is the file; when piped (curl | bash), $0 is
+# "bash" and the script is on stdin.  Handle both.
+if [[ "$0" != "bash" && "$0" != "-bash" ]]; then
+    # Direct execution — check the file itself
+    if head -c 1000 "$0" 2>/dev/null | grep -qP '\r'; then
+        exec bash <(tr -d '\r' < "$0") "$@"
+    fi
+else
+    # Piped (curl | bash) — read stdin, strip CRs, re-exec from cleaned copy
+    _clean=$(mktemp "${TMPDIR:-/tmp}/hindsight-install.XXXXXX")
+    tr -d '\r' > "$_clean"
+    exec bash "$_clean" "$@"
+fi
+
 set -euo pipefail
 
 REPO="jwvolschenk/hindsight-custom"
@@ -518,7 +534,7 @@ fetch_source() {
     if ! $fetched; then
         mkdir -p "$TEMP_DIR/flat"
         for f in core/__init__.py core/project.py core/config.py core/client.py \
-                 mcp_server/__init__.py mcp_server/__main__.py mcp_server/server.py mcp_server/hindsight-mcp-launcher.sh \\
+                 mcp_server/__init__.py mcp_server/__main__.py mcp_server/server.py mcp_server/hindsight-mcp-launcher.sh \
                  installer/__init__.py installer/tui.py \
                  integrations/hermes/__init__.py integrations/hermes/config.example.json \
                  integrations/claude-code/.claude-plugin/plugin.json \
